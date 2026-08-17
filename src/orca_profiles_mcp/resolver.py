@@ -19,6 +19,7 @@ from .models import (
     ResolvedValue,
 )
 from .snapshot import EngineSnapshot
+from .variants import VariantContext, merge_key, variant_index
 
 MAX_CHAIN_DEPTH = 32
 
@@ -126,26 +127,52 @@ class Resolver:
             for key, value in self.snapshot.defaults.items()
             if key not in META_KEYS
         }
+        set1, set2 = self.snapshot.keysets_for(ptype)
+        id_key = self.snapshot.id_key(ptype)
+        variant_key = self.snapshot.variant_key(ptype)
+
+        accumulated_variants: list[str] = []
+        accumulated_ids: list[str] = []
+
         # root first, profile last
         for entry, _ in reversed(chain):
             raw = self.index.load_raw(entry)
+            child_variants = raw.get(variant_key, []) if variant_key else []
+            child_ids = raw.get(id_key, []) if id_key else []
+            mapping = variant_index(
+                accumulated_variants, child_variants, accumulated_ids, child_ids
+            )
+            ctx = VariantContext(mapping=mapping, set1=set1, set2=set2)
+
             for key, value in raw.items():
                 if key in META_KEYS:
                     continue
                 previous = values.get(key)
+                # Engine defaults carry no variant layout, so per-slot merging
+                # cannot apply to them: the first link's value is taken whole.
+                inherited = previous is not None and not previous.is_default
+                parent_value = previous.value if inherited else None
+                merged = merge_key(key, parent_value, value, ctx) if inherited else value
+
                 overridden = []
-                if previous is not None and not previous.is_default:
+                if inherited:
                     overridden = [
                         Override(previous.origin, previous.value),
                         *previous.overridden,
                     ]
                 values[key] = ResolvedValue(
-                    value=value,
+                    value=merged,
                     origin=entry.name,
                     origin_file=str(entry.file),
                     overridden=overridden,
                     is_default=False,
                 )
+
+            if child_variants:
+                accumulated_variants = list(child_variants)
+            if child_ids:
+                accumulated_ids = list(child_ids)
+
         return values
 
     # --- entry point ---

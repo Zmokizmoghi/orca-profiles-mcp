@@ -1,0 +1,77 @@
+"""Merging vector values bound to extruder variants.
+
+Port of DynamicPrintConfig::update_diff_values_to_child_config,
+PrintConfig.cpp:11377. Vector elements correspond to (extruder_variant,
+extruder_id) pairs rather than to positions; for the
+printer_options_with_variant_2 set each variant occupies two consecutive
+values (stride 2).
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Any
+
+
+@dataclass(frozen=True)
+class VariantContext:
+    mapping: list[int]
+    set1: frozenset[str]
+    set2: frozenset[str]
+
+
+def variant_index(
+    parent_variants: list[str],
+    child_variants: list[str],
+    parent_ids: list[str],
+    child_ids: list[str],
+) -> list[int]:
+    """For each parent variant, the index of the matching child variant, or -1."""
+    if not parent_variants:
+        return [0]
+    mapping = [-1] * len(parent_variants)
+    if not child_variants:
+        mapping[0] = 0
+        return mapping
+    for i, parent_variant in enumerate(parent_variants):
+        for j, child_variant in enumerate(child_variants):
+            if parent_variant != child_variant:
+                continue
+            if parent_ids and child_ids:
+                if i >= len(parent_ids) or j >= len(child_ids):
+                    continue
+                if parent_ids[i] != child_ids[j]:
+                    continue
+            mapping[i] = j
+            break
+    return mapping
+
+
+def merge_vector(
+    parent_value: list[str], child_value: list[str], mapping: list[int], stride: int
+) -> list[str]:
+    """Move the child's values into the parent's slots according to mapping."""
+    if len(parent_value) != len(mapping) * stride:
+        # Orca falls back to the child value here (PrintConfig.cpp:11455)
+        return list(child_value)
+    merged = list(parent_value)
+    for parent_slot, child_slot in enumerate(mapping):
+        if child_slot < 0:
+            continue
+        for offset in range(stride):
+            source = child_slot * stride + offset
+            target = parent_slot * stride + offset
+            if source < len(child_value):
+                merged[target] = child_value[source]
+    return merged
+
+
+def merge_key(key: str, parent_value: Any, child_value: Any, ctx: VariantContext) -> Any:
+    """The value of a key after applying the child on top of the parent."""
+    if not isinstance(child_value, list) or not isinstance(parent_value, list):
+        return child_value
+    if key in ctx.set2:
+        return merge_vector(parent_value, child_value, ctx.mapping, stride=2)
+    if key in ctx.set1:
+        return merge_vector(parent_value, child_value, ctx.mapping, stride=1)
+    return child_value
