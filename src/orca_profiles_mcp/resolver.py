@@ -152,6 +152,18 @@ class Resolver:
                 # cannot apply to them: the first link's value is taken whole.
                 inherited = previous is not None and not previous.is_default
                 parent_value = previous.value if inherited else None
+                # "nil" means "keep the parent's element" (Preset::save writes it
+                # for vector elements that did not change).
+                if (
+                    inherited
+                    and isinstance(value, list)
+                    and isinstance(parent_value, list)
+                    and "nil" in value
+                ):
+                    value = [
+                        parent_value[i] if item == "nil" and i < len(parent_value) else item
+                        for i, item in enumerate(value)
+                    ]
                 merged = merge_key(key, parent_value, value, ctx) if inherited else value
 
                 overridden = []

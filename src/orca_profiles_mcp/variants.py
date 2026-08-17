@@ -13,6 +13,9 @@ from dataclasses import dataclass
 from typing import Any
 
 
+NIL = "nil"
+
+
 @dataclass(frozen=True)
 class VariantContext:
     mapping: list[int]
@@ -64,6 +67,27 @@ def merge_vector(
             if source < len(child_value):
                 merged[target] = child_value[source]
     return merged
+
+
+def split_with_nil(
+    parent_value: list[str], child_value: list[str], stride: int
+) -> list[str]:
+    """Replace elements equal to the parent's with "nil".
+
+    Port of ConfigOptionVectorBase::set_with_nil, called from Preset::save
+    (Preset.cpp:718-724): only genuinely changed elements are stored, the rest
+    keep inheriting from the parent element by element.
+    """
+    if len(parent_value) != len(child_value) or stride <= 0:
+        return list(child_value)
+    result = list(child_value)
+    for start in range(0, len(child_value), stride):
+        chunk_child = child_value[start : start + stride]
+        chunk_parent = parent_value[start : start + stride]
+        if chunk_child == chunk_parent:
+            for offset in range(len(chunk_child)):
+                result[start + offset] = NIL
+    return result
 
 
 def merge_key(key: str, parent_value: Any, child_value: Any, ctx: VariantContext) -> Any:

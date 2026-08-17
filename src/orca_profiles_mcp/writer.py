@@ -21,6 +21,7 @@ from .index import IndexEntry, ProfileIndex
 from .models import META_KEYS
 from .resolver import Resolver
 from .snapshot import EngineSnapshot
+from .variants import split_with_nil
 
 INFO_FIELDS = ("sync_info", "user_id", "setting_id", "base_id", "updated_time")
 DEFAULT_INDENT = "    "
@@ -93,11 +94,25 @@ def compute_delta(
     child_raw: dict,
 ) -> dict[str, Any]:
     """Keys differing from the expanded parent, plus the mandatory variant keys."""
-    delta = {
-        key: value
-        for key, value in target_values.items()
-        if key not in META_KEYS and parent_values.get(key) != value
-    }
+    set1, set2 = snapshot.keysets_for(ptype)
+    delta: dict[str, Any] = {}
+
+    for key, value in target_values.items():
+        if key in META_KEYS:
+            continue
+        parent_value = parent_values.get(key)
+        if parent_value == value:
+            continue
+        if (
+            isinstance(value, list)
+            and isinstance(parent_value, list)
+            and (key in set1 or key in set2)
+        ):
+            stride = 2 if key in set2 else 1
+            delta[key] = split_with_nil(parent_value, value, stride)
+        else:
+            delta[key] = value
+
     for key in (snapshot.id_key(ptype), snapshot.variant_key(ptype)):
         if key and key in child_raw:
             delta[key] = child_raw[key]
