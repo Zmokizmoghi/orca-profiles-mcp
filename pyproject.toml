@@ -16,7 +16,10 @@ build-backend = "hatchling.build"
 packages = ["src/orca_profiles_mcp"]
 
 [dependency-groups]
-dev = ["pytest>=8.0"]
+dev = [
+    "anyio>=4.14.2",
+    "pytest>=8.0",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
