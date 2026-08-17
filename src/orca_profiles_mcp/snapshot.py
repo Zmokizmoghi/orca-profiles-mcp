@@ -31,6 +31,7 @@ class EngineSnapshot:
     orca_version: str
     defaults: dict[str, Any]
     variant_sets: dict[str, frozenset[str]]
+    type_options: dict[str, frozenset[str]]
     categories: dict[str, str]
     option_types: dict[str, str]
 
@@ -41,9 +42,21 @@ class EngineSnapshot:
             orca_version=raw["orca_version"],
             defaults=raw["defaults"],
             variant_sets={k: frozenset(v) for k, v in raw["variant_sets"].items()},
+            type_options={
+                k: frozenset(v) for k, v in raw.get("type_options", {}).items()
+            },
             categories=raw["categories"],
             option_types=raw["option_types"],
         )
+
+    def allowed_keys(self, ptype: str) -> frozenset[str] | None:
+        """Keys this profile type may hold, or None when the type is unknown.
+
+        Orca drops everything else at load time (Preset::remove_invalid_keys,
+        Preset.cpp:1766): a process key sitting in a machine profile has no
+        effect on the print.
+        """
+        return self.type_options.get(ptype)
 
     def keysets_for(self, ptype: str) -> tuple[frozenset[str], frozenset[str]]:
         _, _, set1, set2 = _TYPE_KEYS.get(ptype, (None, None, None, None))

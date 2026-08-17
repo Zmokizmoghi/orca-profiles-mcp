@@ -18,8 +18,8 @@ import urllib.request
 from pathlib import Path
 
 MACOS_BINARY = Path("/Applications/OrcaSlicer.app/Contents/MacOS/OrcaSlicer")
-PRINTCONFIG_URL = (
-    "https://raw.githubusercontent.com/SoftFever/OrcaSlicer/{ref}/src/libslic3r/PrintConfig.cpp"
+SOURCE_URL = (
+    "https://raw.githubusercontent.com/SoftFever/OrcaSlicer/{ref}/src/libslic3r/{name}"
 )
 
 VARIANT_SETS = {
@@ -27,6 +27,20 @@ VARIANT_SETS = {
     "filament": "filament_options_with_variant",
     "printer_1": "printer_options_with_variant_1",
     "printer_2": "printer_options_with_variant_2",
+}
+
+# Which keys each profile type may hold. Orca drops the rest on load
+# (Preset::remove_invalid_keys, Preset.cpp:1766), so a machine profile that
+# carries a process key does not actually apply it.
+# Preset.cpp:1005, 1326, 1391, 1406; PrintConfig.cpp:8137.
+TYPE_OPTION_LISTS = {
+    "process": ["s_Preset_print_options"],
+    "filament": ["s_Preset_filament_options"],
+    "machine": [
+        "s_Preset_printer_options",
+        "s_Preset_machine_limits_options",
+        "m_extruder_option_keys",
+    ],
 }
 
 
@@ -43,17 +57,39 @@ def export_defaults(binary: Path, datadir: Path) -> dict:
         return json.loads(out.read_text(encoding="utf-8"))
 
 
-def read_printconfig(source: str | None, ref: str) -> str:
-    """Read PrintConfig.cpp from a local path, or fetch it at the given git ref.
+def read_source(name: str, directory: str | None, ref: str) -> str:
+    """Read a libslic3r source file from a local checkout, or fetch it at a ref.
 
-    The ref should match the installed Orca: the variant key sets change between
+    The ref should match the installed Orca: these lists change between
     releases, and a snapshot taken from a different revision would silently
     describe a different engine.
     """
-    if source is None:
-        with urllib.request.urlopen(PRINTCONFIG_URL.format(ref=ref), timeout=60) as resp:
-            return resp.read().decode("utf-8")
-    return Path(source).read_text(encoding="utf-8")
+    if directory is not None:
+        return (Path(directory) / name).read_text(encoding="utf-8")
+    with urllib.request.urlopen(SOURCE_URL.format(ref=ref, name=name), timeout=60) as resp:
+        return resp.read().decode("utf-8")
+
+
+def parse_string_list(src: str, symbol: str) -> list[str]:
+    """Extract the string literals of a `std::vector`/`std::set` initialiser."""
+    match = re.search(
+        r"\b" + re.escape(symbol) + r"\s*(?:=\s*)?\{(.*?)\n\s*\};", src, re.S
+    )
+    if match is None:
+        raise SystemExit(f"symbol {symbol} not found")
+    return re.findall(r'"([^"]+)"', match.group(1))
+
+
+def parse_type_options(print_config: str, preset: str) -> dict[str, list[str]]:
+    """Keys allowed per profile type; anything else is dropped by Orca on load."""
+    sources = {"m_extruder_option_keys": print_config}
+    result = {}
+    for ptype, symbols in TYPE_OPTION_LISTS.items():
+        keys: set[str] = set()
+        for symbol in symbols:
+            keys.update(parse_string_list(sources.get(symbol, preset), symbol))
+        result[ptype] = sorted(keys)
+    return result
 
 
 def parse_variant_sets(src: str) -> dict[str, list[str]]:
@@ -103,9 +139,10 @@ def main() -> int:
         default=Path.home() / "Library/Application Support/OrcaSlicer",
     )
     parser.add_argument(
-        "--printconfig",
+        "--sources",
         default=None,
-        help="path to PrintConfig.cpp; downloaded from GitHub when omitted",
+        help="path to a local src/libslic3r directory; files are fetched from "
+        "GitHub when omitted",
     )
     parser.add_argument(
         "--ref",
@@ -124,14 +161,17 @@ def main() -> int:
     ref = args.ref or (f"v{version}" if version != "unknown" else "main")
 
     defaults = export_defaults(args.binary, args.datadir)
-    src = read_printconfig(args.printconfig, ref)
-    categories, types = parse_options(src)
+    print_config = read_source("PrintConfig.cpp", args.sources, ref)
+    preset = read_source("Preset.cpp", args.sources, ref)
+    categories, types = parse_options(print_config)
+    type_options = parse_type_options(print_config, preset)
 
     snapshot = {
         "orca_version": version,
-        "source_ref": ref if args.printconfig is None else str(args.printconfig),
+        "source_ref": ref if args.sources is None else str(args.sources),
         "defaults": defaults,
-        "variant_sets": parse_variant_sets(src),
+        "variant_sets": parse_variant_sets(print_config),
+        "type_options": type_options,
         "categories": categories,
         "option_types": types,
     }
@@ -145,7 +185,11 @@ def main() -> int:
         f"  orca version: {snapshot['orca_version']}\n"
         f"  source ref: {snapshot['source_ref']}\n"
         f"  defaults: {len(defaults)}\n"
-        f"  options with a category: {len(categories)} of {len(types)}"
+        f"  options with a category: {len(categories)} of {len(types)}\n"
+        + "\n".join(
+            f"  keys allowed for {ptype}: {len(keys)}"
+            for ptype, keys in sorted(type_options.items())
+        )
     )
     return 0
 

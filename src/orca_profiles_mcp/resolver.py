@@ -116,8 +116,16 @@ class Resolver:
     # --- merge ---
 
     def _merge(
-        self, ptype: str, chain: list[tuple[IndexEntry, str]]
+        self,
+        ptype: str,
+        chain: list[tuple[IndexEntry, str]],
+        diagnostics: list[Diagnostic],
     ) -> dict[str, ResolvedValue]:
+        allowed = self.snapshot.allowed_keys(ptype)
+
+        def is_settable(key: str) -> bool:
+            return key not in META_KEYS and (allowed is None or key in allowed)
+
         # --export-settings emits the header fields (name, from, version) alongside
         # the settings, so META_KEYS are filtered out of the defaults too.
         values: dict[str, ResolvedValue] = {
@@ -125,7 +133,7 @@ class Resolver:
                 value=value, origin="<engine defaults>", origin_file="", is_default=True
             )
             for key, value in self.snapshot.defaults.items()
-            if key not in META_KEYS
+            if is_settable(key)
         }
         set1, set2 = self.snapshot.keysets_for(ptype)
         id_key = self.snapshot.id_key(ptype)
@@ -146,6 +154,19 @@ class Resolver:
 
             for key, value in raw.items():
                 if key in META_KEYS:
+                    continue
+                if not is_settable(key):
+                    diagnostics.append(
+                        Diagnostic(
+                            "warning",
+                            "foreign_key",
+                            f"{entry.name}: key {key!r} does not belong to a "
+                            f"{ptype} profile; Orca drops it on load, so it has "
+                            f"no effect",
+                            link=entry.name,
+                            key=key,
+                        )
+                    )
                     continue
                 previous = values.get(key)
                 # Engine defaults carry no variant layout, so per-slot merging
@@ -196,7 +217,7 @@ class Resolver:
 
         diagnostics: list[Diagnostic] = []
         chain = self._build_chain(entry, diagnostics)
-        values = self._merge(ptype, chain)
+        values = self._merge(ptype, chain, diagnostics)
 
         links = []
         for link_entry, resolution in chain:
