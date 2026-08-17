@@ -72,10 +72,21 @@ def extend_to_length(values: list[str], length: int) -> list[str]:
 def merge_vector(
     parent_value: list[str], child_value: list[str], mapping: list[int], stride: int
 ) -> list[str]:
-    """Move the child's values into the parent's slots according to mapping."""
+    """Move the child's values into the parent's slots according to mapping.
+
+    A "nil" element means "keep whatever the parent holds in this slot", so it
+    is skipped here rather than substituted beforehand: the slot it belongs to
+    is only known once the mapping has been applied. Substituting by position
+    first would copy the wrong extruder's value whenever the child's layout is
+    a subset or a reordering of the parent's.
+    """
     if len(parent_value) != len(mapping) * stride:
-        # Orca falls back to the child value here (PrintConfig.cpp:11455)
-        return list(child_value)
+        # Orca falls back to the child value here (PrintConfig.cpp:11455). With
+        # no usable mapping, a nil can only fall back to the same position.
+        return [
+            parent_value[i] if v == NIL and i < len(parent_value) else v
+            for i, v in enumerate(child_value)
+        ]
     merged = list(parent_value)
     for parent_slot, child_slot in enumerate(mapping):
         if child_slot < 0:
@@ -83,7 +94,7 @@ def merge_vector(
         for offset in range(stride):
             source = child_slot * stride + offset
             target = parent_slot * stride + offset
-            if source < len(child_value):
+            if source < len(child_value) and child_value[source] != NIL:
                 merged[target] = child_value[source]
     return merged
 

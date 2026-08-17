@@ -209,18 +209,8 @@ class Resolver:
                 # padding them contradicts the deltas Orca writes.
                 if inherited and isinstance(parent_value, list) and key in set1:
                     parent_value = extend_to_length(parent_value, slots)
-                # "nil" means "keep the parent's element" (Preset::save writes it
-                # for vector elements that did not change).
-                if (
-                    inherited
-                    and isinstance(value, list)
-                    and isinstance(parent_value, list)
-                    and "nil" in value
-                ):
-                    value = [
-                        parent_value[i] if item == "nil" and i < len(parent_value) else item
-                        for i, item in enumerate(value)
-                    ]
+                # "nil" elements are resolved inside merge_key, once the child's
+                # slots have been mapped onto the parent's — see merge_vector.
                 merged = merge_key(key, parent_value, value, ctx) if inherited else value
 
                 overridden = []
@@ -250,7 +240,16 @@ class Resolver:
         entry = self.index.get(ptype, name)
         if entry is None:
             raise KeyError(f"profile not found: {ptype}/{name}")
+        return self.resolve_entry(entry)
 
+    def resolve_entry(self, entry: IndexEntry) -> ResolvedProfile:
+        """Expand a specific index entry.
+
+        Callers that already hold an entry must use this: looking the name up
+        again would go through the global index and can land on a same-named
+        profile from another vendor.
+        """
+        ptype = entry.type
         diagnostics: list[Diagnostic] = []
         chain = self._build_chain(entry, diagnostics)
         values = self._merge(ptype, chain, diagnostics)

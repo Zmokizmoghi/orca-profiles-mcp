@@ -30,6 +30,92 @@ SETTINGS_ID_KEY = {
     "filament": "filament_settings_id",
     "machine": "printer_settings_id",
 }
+# Option types whose value is a list of strings rather than a plain string.
+_VECTOR_TYPE_PREFIXES = ("coStrings", "coFloats", "coInts", "coBools", "coPercents",
+                         "coPoints", "coFloatsOrPercents", "coEnums")
+
+
+def validate_profile_name(name: str) -> str:
+    """Reject names that would write outside the profile directory.
+
+    A profile name becomes a filename, and `dir / name` silently discards the
+    directory when the name is absolute. Names arrive from tool calls, so they
+    are untrusted input.
+    """
+    if not name or not name.strip():
+        raise ValueError("profile name must not be empty")
+    if name in (".", ".."):
+        raise ValueError(f"invalid profile name: {name!r}")
+    if any(sep in name for sep in ("/", "\\")):
+        raise ValueError(f"profile name must not contain a path separator: {name!r}")
+    if any(ord(ch) < 32 or ord(ch) == 127 for ch in name):
+        raise ValueError("profile name must not contain control characters")
+    return name
+
+
+def is_vector_option(snapshot: EngineSnapshot, key: str, ptype: str = "") -> bool:
+    """Whether this key is stored as a list of strings in a profile file.
+
+    Two independent reasons make a key a vector, and the option's declared type
+    only covers one of them. Keys bound to extruder variants hold one element
+    per extruder regardless of their scalar type: outer_wall_speed is a coFloat
+    whose engine default is "60", yet profiles store it as ["120"].
+    """
+    if isinstance(snapshot.defaults.get(key), list):
+        return True
+    if ptype:
+        set1, set2 = snapshot.keysets_for(ptype)
+        if key in set1 or key in set2:
+            return True
+    ctype = snapshot.option_types.get(key) or ""
+    return ctype.startswith(_VECTOR_TYPE_PREFIXES)
+
+
+def validate_values(
+    snapshot: EngineSnapshot, ptype: str, values: dict[str, Any]
+) -> None:
+    """Check ownership, shape and representation before anything is written.
+
+    Orca stores every setting as a string or a list of strings, drops keys that
+    belong to another profile type, and would misread a scalar written as a
+    vector. Catching that here keeps a malformed edit from reaching the file.
+    """
+    metadata = sorted(set(values) & META_KEYS)
+    if metadata:
+        raise ValueError(
+            f"these keys are profile metadata and cannot be set as values: "
+            f"{', '.join(metadata)}"
+        )
+
+    allowed = snapshot.allowed_keys(ptype)
+    for key, value in values.items():
+        if not snapshot.is_known_key(key):
+            raise ValueError(f"unknown to the engine: {key}")
+        if allowed is not None and key not in allowed:
+            owners = [
+                t for t in ("process", "machine", "filament")
+                if key in (snapshot.allowed_keys(t) or ())
+            ]
+            owner = f" (it belongs to: {', '.join(owners)})" if owners else ""
+            raise ValueError(
+                f"{key!r} is not a {ptype} setting{owner}; Orca drops it on load"
+            )
+
+        wants_vector = is_vector_option(snapshot, key, ptype)
+        if isinstance(value, list):
+            if not wants_vector:
+                raise ValueError(f"{key!r} is a scalar option, got a list")
+            bad = [v for v in value if not isinstance(v, str)]
+            if bad:
+                raise ValueError(f"{key!r} must hold string elements, got {bad!r}")
+        elif isinstance(value, str):
+            if wants_vector:
+                raise ValueError(f"{key!r} is a vector option, got a plain string")
+        else:
+            raise ValueError(
+                f"{key!r} must be a string or a list of strings, got "
+                f"{type(value).__name__}"
+            )
 
 
 def detect_indent(path: Path) -> str:
@@ -143,10 +229,15 @@ class Writer:
         parent_name = raw.get("inherits")
         if not parent_name:
             return dict(self.snapshot.defaults)
-        parent_entry, _ = self.resolver._find_parent(entry.type, parent_name)
+        # Same vendor-first lookup the resolver uses: base profile names repeat
+        # across vendors, and comparing against another vendor's base would drop
+        # overrides that are genuinely needed.
+        parent_entry, _ = self.resolver._find_parent(
+            entry.type, parent_name, entry.vendor
+        )
         if parent_entry is None:
             raise KeyError(f"parent {parent_name!r} not found for {entry.name!r}")
-        resolved = self.resolver.resolve(parent_entry.type, parent_entry.name)
+        resolved = self.resolver.resolve_entry(parent_entry)
         return {key: rv.value for key, rv in resolved.values.items()}
 
     def _warnings_for(self, entry: IndexEntry) -> list[str]:
@@ -162,6 +253,11 @@ class Writer:
             more = "…" if len(children) > 5 else ""
             warnings.append(f"{len(children)} profiles inherit from it: {listed}{more}")
         return warnings
+
+    def _settings_id_value(self, ptype: str, name: str) -> Any:
+        """filament_settings_id is coStrings; the print and printer ids are scalar."""
+        key = SETTINGS_ID_KEY[ptype]
+        return [name] if is_vector_option(self.snapshot, key) else name
 
     def _write(self, entry: IndexEntry, data: dict, backup: bool) -> str | None:
         backup_path = self._backup(entry.file, backup)
@@ -181,10 +277,7 @@ class Writer:
         if entry is None:
             raise KeyError(f"profile not found: {ptype}/{name}")
         raw = dict(self.index.load_raw(entry))
-
-        unknown = [k for k in values if not self.snapshot.is_known_key(k)]
-        if unknown:
-            raise ValueError(f"unknown to the engine: {', '.join(sorted(unknown))}")
+        validate_values(self.snapshot, ptype, values)
 
         resolved = self.resolver.resolve(ptype, name)
         target = {key: rv.value for key, rv in resolved.values.items()}
@@ -215,6 +308,8 @@ class Writer:
         values: dict[str, Any],
         backup: bool = True,
     ) -> dict:
+        validate_profile_name(name)
+        validate_values(self.snapshot, ptype, values)
         if self.index.get(ptype, name) is not None:
             raise ValueError(f"profile already exists: {ptype}/{name}")
         parent_entry, _ = self.resolver._find_parent(ptype, inherits)
@@ -226,13 +321,15 @@ class Writer:
 
         path = user_dir / ptype / f"{name}.json"
         data = {
+            **values,
+            # identity fields are written last: they define the profile and must
+            # not be overridable through the values payload
             "name": name,
             "from": "User",
             "version": self.snapshot.orca_version,
             "inherits": parent_entry.name,
             "is_custom_defined": "0",
-            SETTINGS_ID_KEY[ptype]: name,
-            **values,
+            SETTINGS_ID_KEY[ptype]: self._settings_id_value(ptype, name),
         }
         write_profile_json(path, data, directory_indent(path.parent))
         write_info(
@@ -255,6 +352,7 @@ class Writer:
         }
 
     def rename_profile(self, ptype: str, name: str, new_name: str) -> dict:
+        validate_profile_name(new_name)
         entry = self.index.get(ptype, name)
         if entry is None:
             raise KeyError(f"profile not found: {ptype}/{name}")
@@ -266,7 +364,7 @@ class Writer:
         raw = dict(self.index.load_raw(entry))
         raw["name"] = new_name
         if SETTINGS_ID_KEY[ptype] in raw:
-            raw[SETTINGS_ID_KEY[ptype]] = new_name
+            raw[SETTINGS_ID_KEY[ptype]] = self._settings_id_value(ptype, new_name)
 
         new_path = entry.file.with_name(f"{new_name}.json")
         write_profile_json(new_path, raw, detect_indent(entry.file))
