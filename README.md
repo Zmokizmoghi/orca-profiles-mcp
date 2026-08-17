@@ -51,6 +51,7 @@ claude mcp add orca-profiles -- uv --directory ~/job/orca-profiles-mcp run orca-
 | `compare_with_upstream` | compare against the OrcaSlicer repository |
 | `validate` | broken `inherits`, cycles, unknown keys, redundant deltas |
 | `check_deltas` | verify expansion against the deltas Orca itself wrote |
+| | reports redundant keys and unexplained vector lengths separately |
 | `set_values` | set values with delta recomputation |
 | `create_profile` | create a user profile |
 | `rename_profile`, `delete_profile` | rename and delete |
@@ -63,8 +64,18 @@ written back is unchanged.
 
 ## Writing profiles
 
-Writing is unrestricted: both user and system profiles are available. A backup
-copy is made next to the file before every write (`backup=false` disables it).
+Your own profiles are edited freely. Touching a system or bundled one requires
+`force=true`: those files belong to a vendor library, the next profile update
+restores them, and every descendant inherits the change.
+
+Writes go through a temporary file and an atomic rename, so an interrupted
+write cannot truncate a profile, and a backup copy is made next to the file
+first (`backup=false` disables it). Values are checked before anything is
+written — a key belonging to another profile type, a vector where the engine
+wants a scalar, or a number where the format requires a string is refused
+rather than stored and silently dropped by Orca. Settings your pinned snapshot
+does not recognise are carried through untouched, so a profile written by a
+newer Orca does not lose them.
 
 **OrcaSlicer reads profiles at startup and rewrites them at exit.** Edits made
 while the application is running will be overwritten — close Orca first.
