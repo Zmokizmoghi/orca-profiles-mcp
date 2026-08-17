@@ -7,6 +7,8 @@ engine defaults.
 
 from __future__ import annotations
 
+import re
+
 from .index import IndexEntry, ProfileIndex
 from .models import (
     META_KEYS,
@@ -20,6 +22,11 @@ from .snapshot import EngineSnapshot
 
 MAX_CHAIN_DEPTH = 32
 
+# PresetCollection::find_preset2, Preset.cpp: when the parent is missing and the
+# name contains "Generic", it is rewritten to "Generic <material> @System",
+# which belongs to the OrcaFilamentLibrary vendor.
+_GENERIC_RE = re.compile(r"^(?:.*?\b(?:\w+_)?)(Generic)\b\s+([^@]+?)\s*(?:@.*)?$")
+
 
 class Resolver:
     def __init__(self, index: ProfileIndex, snapshot: EngineSnapshot) -> None:
@@ -32,6 +39,18 @@ class Resolver:
         entry = self.index.get(ptype, name)
         if entry is not None:
             return entry, "exact"
+
+        renamed = self.index.renamed(ptype, name)
+        if renamed is not None:
+            return renamed, "renamed_from"
+
+        if "Generic" in name:
+            alternative = _GENERIC_RE.sub(r"Generic \2 @System", name)
+            if alternative != name:
+                entry = self.index.get(ptype, alternative)
+                if entry is not None:
+                    return entry, "generic_fallback"
+
         return None, "missing"
 
     # --- chain ---
