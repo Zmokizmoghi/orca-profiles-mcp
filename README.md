@@ -111,5 +111,16 @@ present; everything else runs against fixtures.
 
 ## Documents
 
-- Design: `docs/specs/2026-08-17-orca-profiles-mcp-design.md`
+- Design: `docs/specs/2026-08-17-orca-profiles-mcp-design.md` — includes what
+  reading the OrcaSlicer sources established about the profile format, and what
+  the CLI experiments ruled out
 - Implementation plan: `docs/plans/2026-08-17-orca-profiles-mcp.md`
+
+## Licence
+
+AGPL-3.0, matching [OrcaSlicer](https://github.com/SoftFever/OrcaSlicer) itself.
+This project contains no OrcaSlicer code, but its inheritance logic is a
+line-by-line port of `Preset.cpp` and `PrintConfig.cpp`, and the engine snapshot
+holds default values and key lists extracted from that source.
+
+Not affiliated with or endorsed by the OrcaSlicer project.
