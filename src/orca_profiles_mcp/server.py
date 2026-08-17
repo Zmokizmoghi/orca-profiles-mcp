@@ -120,6 +120,39 @@ def validate(scope: str = "user") -> dict:
     return service().validate(scope)
 
 
+@server.tool(
+    description=(
+        "Set profile values. The delta against the parent is recomputed "
+        "automatically and the paired .info is updated. Editing a shared "
+        "profile affects every descendant"
+    )
+)
+def set_values(type: str, name: str, values: dict, backup: bool = True) -> dict:
+    return service().set_values(type, name, values, backup=backup)
+
+
+@server.tool(description="Create a user profile inheriting from the given one")
+def create_profile(type: str, name: str, inherits: str, values: dict) -> dict:
+    return service().create_profile(type, name, inherits, values)
+
+
+@server.tool(description="Rename a user profile")
+def rename_profile(type: str, name: str, new_name: str) -> dict:
+    return service().rename_profile(type, name, new_name)
+
+
+@server.tool(
+    description="Delete a profile; for cloud-synced ones the .info file is flagged instead"
+)
+def delete_profile(type: str, name: str) -> dict:
+    return service().delete_profile(type, name)
+
+
+@server.tool(description="Drop keys whose values are identical to the parent's")
+def normalize_profile(type: str, name: str, backup: bool = True) -> dict:
+    return service().normalize_profile(type, name, backup=backup)
+
+
 def main() -> None:
     server.run(transport="stdio")
 
