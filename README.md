@@ -106,6 +106,18 @@ uv run pytest
 uv run pytest
 ```
 
+Four layers:
+
+- unit tests over a miniature fixture library, one per edge case — cross-vendor
+  inheritance, the `Generic` fallback, `renamed_from`, cycles, missing parents,
+  stride-1 and stride-2 vectors, `nil` elements;
+- write round-trips: read → write unchanged → the file is byte-identical;
+- end-to-end tests that spawn the packaged entry point as a subprocess and
+  drive it over MCP stdio, covering tool registration, a full
+  create/edit/verify/delete cycle, and error propagation;
+- checks against the installed library, including the delta verification
+  described above.
+
 Tests using the real library skip themselves when no Orca data directory is
 present; everything else runs against fixtures.
 
