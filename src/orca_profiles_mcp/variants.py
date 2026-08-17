@@ -50,6 +50,25 @@ def variant_index(
     return mapping
 
 
+def extend_to_length(values: list[str], length: int) -> list[str]:
+    """Pad a vector to `length` by repeating its last element.
+
+    Orca sizes variant vectors by the extruder count of the profile being
+    loaded (extend_default_config_length, Preset.cpp:231): machine vectors take
+    len(nozzle_diameter), or the explicit *_extruder_variant list when present.
+
+    We apply this to the parent as well when a child declares more extruders
+    than its parent. The engine's own merge keeps the parent's length here,
+    which drops the extra extruders' values; the deltas Orca writes for such
+    profiles contain the full-length vector, so padding is what reproduces its
+    recorded output. A single-extruder parent under a toolchanger child is the
+    case that makes the difference visible.
+    """
+    if length <= len(values) or not values:
+        return list(values)
+    return list(values) + [values[-1]] * (length - len(values))
+
+
 def merge_vector(
     parent_value: list[str], child_value: list[str], mapping: list[int], stride: int
 ) -> list[str]:

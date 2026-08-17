@@ -19,7 +19,7 @@ from .models import (
     ResolvedValue,
 )
 from .snapshot import EngineSnapshot
-from .variants import VariantContext, merge_key, variant_index
+from .variants import VariantContext, extend_to_length, merge_key, variant_index
 
 MAX_CHAIN_DEPTH = 32
 
@@ -27,6 +27,22 @@ MAX_CHAIN_DEPTH = 32
 # name contains "Generic", it is rewritten to "Generic <material> @System",
 # which belongs to the OrcaFilamentLibrary vendor.
 _GENERIC_RE = re.compile(r"^(?:.*?\b(?:\w+_)?)(Generic)\b\s+([^@]+?)\s*(?:@.*)?$")
+
+
+def _variant_slots(ptype: str, raw: dict, variants: list[str]) -> int:
+    """How many variant slots this profile's vectors span.
+
+    extend_default_config_length, Preset.cpp:231: an explicit *_extruder_variant
+    list wins; a machine profile otherwise takes its extruder count from
+    nozzle_diameter.
+    """
+    if variants:
+        return len(variants)
+    if ptype == "machine":
+        nozzles = raw.get("nozzle_diameter")
+        if isinstance(nozzles, list) and nozzles:
+            return len(nozzles)
+    return 1
 
 
 class Resolver:
@@ -151,6 +167,7 @@ class Resolver:
                 accumulated_variants, child_variants, accumulated_ids, child_ids
             )
             ctx = VariantContext(mapping=mapping, set1=set1, set2=set2)
+            slots = _variant_slots(ptype, raw, child_variants)
 
             for key, value in raw.items():
                 if key in META_KEYS:
@@ -173,6 +190,14 @@ class Resolver:
                 # cannot apply to them: the first link's value is taken whole.
                 inherited = previous is not None and not previous.is_default
                 parent_value = previous.value if inherited else None
+                # A child may declare more extruders than its parent; pad the
+                # parent so the extra extruders keep a value instead of being
+                # dropped.
+                # Stride-2 keys (the machine limits) are excluded: real profiles
+                # store one value per key even on multi-extruder machines, and
+                # padding them contradicts the deltas Orca writes.
+                if inherited and isinstance(parent_value, list) and key in set1:
+                    parent_value = extend_to_length(parent_value, slots)
                 # "nil" means "keep the parent's element" (Preset::save writes it
                 # for vector elements that did not change).
                 if (

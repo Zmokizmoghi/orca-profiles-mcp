@@ -121,6 +121,18 @@ def validate(scope: str = "user") -> dict:
 
 
 @server.tool(
+    description=(
+        "Verify inheritance expansion against the deltas Orca itself wrote: for "
+        "every profile, the delta is recomputed and compared with the file. A "
+        "mismatch means the resolver expands the parent differently than the "
+        "engine did; redundant keys are reported separately and are harmless"
+    )
+)
+def check_deltas(scope: str = "user") -> dict:
+    return service().check_deltas(scope)
+
+
+@server.tool(
     description="Compare a profile against its version in the OrcaSlicer repository"
 )
 def compare_with_upstream(type: str, name: str, ref: str = "main") -> dict:

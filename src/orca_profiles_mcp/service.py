@@ -313,6 +313,11 @@ class Service:
             "differences": differences,
         }
 
+    def check_deltas(self, scope: str = "user") -> dict:
+        from .delta_check import check_library_deltas
+
+        return check_library_deltas(self.index, self.resolver, self.snapshot, scope)
+
     def validate(self, scope: str = "user") -> dict:
         diagnostics = validate_library(self.index, self.resolver, self.snapshot, scope)
         return {
