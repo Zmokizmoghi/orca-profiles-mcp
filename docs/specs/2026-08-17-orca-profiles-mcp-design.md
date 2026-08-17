@@ -113,7 +113,31 @@ Three options were evaluated and rejected:
 
 Beyond cost: the C++ merge is destructive — `update_diff_values_to_child_config` overwrites a value without retaining what was there. Orca has no key provenance at all, so it would have to be built on top regardless.
 
-Three things are reused instead: Orca as an oracle for differential testing, the engine defaults via `--export-settings`, and a line-by-line port of the key functions with source references in comments.
+Two things are reused instead: the engine defaults via `--export-settings`, and a line-by-line port of the key functions with source references in comments.
+
+### 2.8 The CLI is not an oracle for inheritance — verified
+
+This spec originally assumed `--export-settings` could expand a profile and serve as ground truth. **It cannot.** Three approaches were tried against the installed 2.4.2:
+
+1. `--load-settings <profile>` returns the engine defaults plus the keys present in the given files, and never walks `inherits`. Proof: `extruder_clearance_radius` is defined only in the parent `fdm_machine_common`; the engine returned its default `40`, not the parent's `65`.
+2. Selecting presets through `OrcaSlicer.conf` does not activate them — the export is still the bare defaults.
+3. Passing the whole chain as a file list is rejected: `duplicate machine config file`.
+
+Additionally, the CLI needs a machine *and* a process profile together; either alone is refused.
+
+What Orca does leave behind is evidence of its own expansion. When it saves a user profile it stores the minimal delta against the fully expanded parent (`Preset::save`), so every profile Orca has written is a recorded answer. Recomputing that delta and comparing against the file reproduces the engine's expansion indirectly, on real data. That is the verification this project uses (§7, level 3).
+
+### 2.9 Keys are filtered by profile type
+
+`Preset::remove_invalid_keys` (`Preset.cpp:1766`) drops keys that do not belong to the profile's type at load time. The allowed sets come from `s_Preset_print_options`, `s_Preset_filament_options`, `s_Preset_printer_options` + `s_Preset_machine_limits_options` + `m_extruder_option_keys` (`Preset.cpp:1005, 1326, 1391, 1406`; `PrintConfig.cpp:8137`) — 356 keys for process, 160 for machine, 129 for filament in 2.4.2.
+
+This is not theoretical: Sovol's `fdm_machine_common` sets `extruder_clearance_radius`, a process key inside a machine profile. The engine ignores it, so reporting it as effective would be wrong.
+
+### 2.10 Vector length follows the extruder count
+
+`extend_default_config_length` (`Preset.cpp:231`) sizes variant vectors by the profile's extruder count: `len(nozzle_diameter)` for a machine, or the explicit `*_extruder_variant` list when present; stride-2 sets get twice that.
+
+A toolchanger child inheriting from a single-extruder parent is the case where this matters — without padding the parent, the second extruder's values are lost. Stride-2 machine limits are excluded from padding: real profiles store a single value there even on multi-extruder machines, and the deltas Orca writes confirm it.
 
 ## 3. Architecture
 
@@ -217,7 +241,7 @@ Diagnostic
 
 **Verification**
 
-- `verify_against_orca(type, name)` — run through `--export-settings` and compare against the resolver's output.
+- `check_deltas(scope)` — recompute the delta of every profile in scope and compare it with what Orca stored (§2.8). Mismatches mean the resolver disagrees with the engine about a parent; keys already equal to the parent are reported apart as harmless.
 
 ### 5.1 Output size
 
@@ -246,11 +270,11 @@ Development follows TDD: the test is written before the implementation.
 
 **Level 2 — snapshot of the real library.** The working profiles: `SOVOL SV08 0.4 nozzle` from `datadir/system` shadowing the bundle's `Sovol SV08 0.4 nozzle`, a toolchanger profile with `nozzle_diameter: ["0.4","0.4"]`, and the user profile `0.16mm Optimal` inheriting from another vendor. A regression set.
 
-**Level 3 — differential testing against the engine.** Each profile in the sample is expanded by our resolver and by `--export-settings`; a divergence fails the test. The sample is fixed and stored in the repository as a list of names: every profile of the vendors Sovol, SovolStock, Creality and Voron (the ones used on this machine), plus one profile of each type from ten arbitrary other vendors, as a check that the implementation is not tuned to a single branch of the data. Explained divergences go into an allowlist with a comment and a reason.
+**Level 3 — against the deltas Orca wrote.** For every profile in scope, the delta is recomputed with our resolver and compared with what the file stores (§2.8). A mismatch means our expansion of the parent differs from the engine's. Keys stored despite already equalling the parent are counted separately: they mean the file predates a change to its parent, not that the resolver is wrong.
 
-The run needs OrcaSlicer installed and takes seconds per profile, so level 3 is a separate test group and does not run alongside levels 1–2.
+This needs no running Orca, only its files, and covers the whole library at once. It is what caught the toolchanger vector defect.
 
-**Level 4 — write round-trip.** Read → write unchanged → the file is byte-identical. Write a value → read it back → get exactly that value. Finally, feed the written file to the Orca CLI to confirm the engine accepts it.
+**Level 4 — write round-trip.** Read → write unchanged → the file is byte-identical. Write a value → read it back → get exactly that value. Level 3 covers acceptance implicitly: a written delta that the recomputation reproduces is one Orca would have written itself.
 
 ## 8. Technical decisions
 
@@ -270,7 +294,7 @@ The run needs OrcaSlicer installed and takes seconds per profile, so level 3 is 
 
 | Risk | Mitigation |
 |---|---|
-| Resolver diverges from the engine after an Orca upgrade | Level 3 differential tests plus one-command snapshot regeneration |
+| Resolver diverges from the engine after an Orca upgrade | Level 3 delta verification plus one-command snapshot regeneration |
 | Edits made while Orca is running get overwritten | Documented; a backup copy is made before every write |
 | A bug in the `nil` vector logic breaks per-element inheritance | Dedicated stride-1 and stride-2 tests, round-trip, verification through the CLI |
 | Editing a system profile affects dozens of descendants | `find_children` as a mandatory step; `set_values` warns when writing outside the user directory |
