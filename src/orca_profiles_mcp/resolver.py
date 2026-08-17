@@ -52,7 +52,16 @@ class Resolver:
 
     # --- parent name resolution ---
 
-    def _find_parent(self, ptype: str, name: str) -> tuple[IndexEntry | None, str]:
+    def _find_parent(
+        self, ptype: str, name: str, vendor: str = ""
+    ) -> tuple[IndexEntry | None, str]:
+        # Base profiles reuse the same name across vendors (fdm_machine_common
+        # exists in 64 of them), so a profile's own vendor wins before the
+        # global lookup — otherwise a Sovol printer inherits Creality's base.
+        own = self.index.get_in_vendor(ptype, vendor, name)
+        if own is not None:
+            return own, "exact"
+
         entry = self.index.get(ptype, name)
         if entry is not None:
             return entry, "exact"
@@ -94,7 +103,9 @@ class Resolver:
                     )
                 )
                 break
-            parent, resolution = self._find_parent(current.type, parent_name)
+            parent, resolution = self._find_parent(
+                current.type, parent_name, current.vendor
+            )
             if parent is None:
                 diagnostics.append(
                     Diagnostic(

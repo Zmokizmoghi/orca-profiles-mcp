@@ -46,9 +46,11 @@ class ProfileIndex:
         shadowed: dict[tuple[str, str], list[IndexEntry]],
         user_dir: Path | None = None,
         user_id: str | None = None,
+        by_vendor: dict[tuple[str, str, str], IndexEntry] | None = None,
     ) -> None:
         self._entries = entries
         self._shadowed = shadowed
+        self._by_vendor = by_vendor or {}
         self._user_dir = user_dir
         self._user_id = user_id
         self._raw_cache: dict[Path, dict] = {}
@@ -61,9 +63,12 @@ class ProfileIndex:
     def build(cls, setup: Setup) -> "ProfileIndex":
         entries: dict[tuple[str, str], IndexEntry] = {}
         shadowed: dict[tuple[str, str], list[IndexEntry]] = {}
+        by_vendor: dict[tuple[str, str, str], IndexEntry] = {}
 
         def add(entry: IndexEntry) -> None:
             key = (entry.type, entry.name)
+            if entry.vendor:
+                by_vendor.setdefault((entry.type, entry.vendor, entry.name), entry)
             if key in entries:
                 shadowed.setdefault(key, []).append(entry)
             else:
@@ -103,7 +108,7 @@ class ProfileIndex:
                     name = data.get("name") or path.stem
                     add(IndexEntry(ptype, name, "", "user", path))
 
-        return cls(entries, shadowed, setup.user_dir, setup.user_id)
+        return cls(entries, shadowed, setup.user_dir, setup.user_id, by_vendor)
 
     # --- access ---
 
@@ -117,6 +122,18 @@ class ProfileIndex:
 
     def get(self, ptype: str, name: str) -> IndexEntry | None:
         return self._entries.get((ptype, name))
+
+    def get_in_vendor(self, ptype: str, vendor: str, name: str) -> IndexEntry | None:
+        """Look the name up inside one vendor only.
+
+        Base profiles share names across vendors — 64 of them ship a machine
+        profile called fdm_machine_common — so a global lookup would hand a
+        Sovol printer Creality's base. Each vendor lists its own profiles in
+        <Vendor>.json, which makes ownership unambiguous.
+        """
+        if not vendor:
+            return None
+        return self._by_vendor.get((ptype, vendor, name))
 
     def all(self, ptype: str | None = None) -> list[IndexEntry]:
         return [e for e in self._entries.values() if ptype is None or e.type == ptype]
