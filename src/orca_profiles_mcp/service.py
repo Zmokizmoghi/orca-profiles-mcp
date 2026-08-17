@@ -267,6 +267,52 @@ class Service:
                 differences[key] = {"a": va, "b": vb}
         return {"a": a, "b": b, "type": type, "mode": mode, "differences": differences}
 
+    def compare_with_upstream(self, type: str, name: str, ref: str = "main") -> dict:
+        entry = self.index.get(type, name)
+        if entry is None:
+            raise KeyError(f"profile not found: {type}/{name}")
+        if self.upstream is None:
+            from .upstream import UpstreamClient
+
+            self.upstream = UpstreamClient(
+                cache_dir=self.setup.datadir / ".orca-profiles-mcp-cache", ref=ref
+            )
+
+        vendor = entry.vendor
+        local_raw = {
+            k: v for k, v in self.index.load_raw(entry).items() if k not in META_KEYS
+        }
+        sub_path = self.upstream.find_sub_path(vendor, type, name) if vendor else None
+        remote_raw = (
+            self.upstream.fetch_profile(vendor, sub_path)
+            if vendor and sub_path
+            else None
+        )
+        if remote_raw is None:
+            return {
+                "name": name,
+                "type": type,
+                "vendor": vendor,
+                "found_upstream": False,
+                "note": "no such profile in the OrcaSlicer repository for this ref",
+                "differences": {},
+            }
+
+        remote_values = {k: v for k, v in remote_raw.items() if k not in META_KEYS}
+        differences = {}
+        for key in sorted(set(local_raw) | set(remote_values)):
+            local_value, remote_value = local_raw.get(key), remote_values.get(key)
+            if local_value != remote_value:
+                differences[key] = {"local": local_value, "upstream": remote_value}
+        return {
+            "name": name,
+            "type": type,
+            "vendor": vendor,
+            "found_upstream": True,
+            "ref": ref,
+            "differences": differences,
+        }
+
     def validate(self, scope: str = "user") -> dict:
         diagnostics = validate_library(self.index, self.resolver, self.snapshot, scope)
         return {

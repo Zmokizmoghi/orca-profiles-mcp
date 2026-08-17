@@ -121,6 +121,13 @@ def validate(scope: str = "user") -> dict:
 
 
 @server.tool(
+    description="Compare a profile against its version in the OrcaSlicer repository"
+)
+def compare_with_upstream(type: str, name: str, ref: str = "main") -> dict:
+    return service().compare_with_upstream(type, name, ref)
+
+
+@server.tool(
     description=(
         "Set profile values. The delta against the parent is recomputed "
         "automatically and the paired .info is updated. Editing a shared "
