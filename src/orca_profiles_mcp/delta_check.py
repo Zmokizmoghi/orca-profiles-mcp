@@ -65,18 +65,33 @@ def check_profile_delta(
         if key not in META_KEYS and (allowed is None or key in allowed)
     }
 
-    parent_resolved = resolver.resolve(parent_entry.type, parent_entry.name)
+    parent_resolved = resolver.resolve_entry(parent_entry)
     parent_values = {key: rv.value for key, rv in parent_resolved.values.items()}
-    resolved = resolver.resolve(ptype, name)
+    resolved = resolver.resolve_entry(entry)
     target = {key: rv.value for key, rv in resolved.values.items()}
     recomputed = compute_delta(parent_values, target, ptype, snapshot, raw)
+
+    def comparable(key: str, value: Any) -> Any:
+        """Expand "nil" so the two sides are compared as values, not encodings.
+
+        A hand-written file may spell out an element the encoder would compress
+        to "nil". That is redundancy, not a disagreement about the parent, and
+        reporting it as a mismatch would discredit the whole check.
+        """
+        parent_value = parent_values.get(key)
+        if isinstance(value, list) and isinstance(parent_value, list):
+            return [
+                parent_value[i] if item == "nil" and i < len(parent_value) else item
+                for i, item in enumerate(value)
+            ]
+        return value
 
     only_stored = sorted(set(stored) - set(recomputed))
     only_recomputed = sorted(set(recomputed) - set(stored))
     differing = {
         key: {"stored": stored[key], "recomputed": recomputed[key]}
         for key in sorted(set(stored) & set(recomputed))
-        if stored[key] != recomputed[key]
+        if comparable(key, stored[key]) != comparable(key, recomputed[key])
     }
 
     return {

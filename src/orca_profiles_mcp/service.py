@@ -271,7 +271,9 @@ class Service:
         entry = self.index.get(type, name)
         if entry is None:
             raise KeyError(f"profile not found: {type}/{name}")
-        if self.upstream is None:
+        # The client carries its ref, so a cached one must not serve another:
+        # it would fetch the first ref's files and label them with the second.
+        if self.upstream is None or getattr(self.upstream, "ref", ref) != ref:
             from .upstream import UpstreamClient
 
             self.upstream = UpstreamClient(

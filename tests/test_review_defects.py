@@ -221,3 +221,118 @@ def test_writer_and_resolver_agree_on_the_parent(orca_tree, write_profile):
     chain_parent = resolver.resolve("machine", "Rival Printer").chain[1]
     assert chain_parent.name == resolver_parent.name
     assert chain_parent.vendor == resolver_parent.vendor
+
+
+# --- data must survive a write ---
+
+
+def test_keys_unknown_to_the_snapshot_are_preserved(writer, orca_tree, write_profile):
+    """A newer Orca's settings must not be deleted by an unrelated edit."""
+    path = orca_tree["user_dir"] / "process/Futuristic.json"
+    write_profile(
+        path,
+        {
+            "name": "Futuristic",
+            "from": "User",
+            "version": "1.9.0.2",
+            "inherits": "0.20mm Standard @Acme",
+            "some_future_setting": "custom",
+            "top_shell_layers": "4",
+        },
+    )
+    index, resolver, snapshot = build()
+    Writer(index, resolver, snapshot).set_values(
+        "process", "Futuristic", {"top_shell_layers": "5"}
+    )
+    data = json.loads(path.read_text(encoding="utf-8"))
+    assert data["some_future_setting"] == "custom"
+    assert data["top_shell_layers"] == "5"
+
+
+def test_create_does_not_overwrite_a_file_outside_the_index(writer, orca_tree):
+    """Unreadable files are skipped by the index; the path is still taken."""
+    stray = orca_tree["user_dir"] / "process/Stray.json"
+    stray.parent.mkdir(parents=True, exist_ok=True)
+    stray.write_text("{ this is not valid json", encoding="utf-8")
+
+    index, resolver, snapshot = build()
+    with pytest.raises(ValueError, match="already exists"):
+        Writer(index, resolver, snapshot).create_profile(
+            "process", "Stray", "0.20mm Standard @Acme", {"layer_height": "0.1"}
+        )
+    assert stray.read_text(encoding="utf-8").startswith("{ this is not valid json")
+
+
+def test_writes_are_atomic(writer, orca_tree, monkeypatch):
+    """A failure mid-write must leave the previous file intact."""
+    import orca_profiles_mcp.writer as writer_module
+
+    path = orca_tree["user_dir"] / "process/My Fast.json"
+    before = path.read_text(encoding="utf-8")
+
+    real_replace = writer_module.os.replace
+
+    def explode(src, dst):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(writer_module.os, "replace", explode)
+    with pytest.raises(OSError):
+        writer.set_values("process", "My Fast", {"top_shell_layers": "6"}, backup=False)
+    monkeypatch.setattr(writer_module.os, "replace", real_replace)
+
+    assert path.read_text(encoding="utf-8") == before
+    assert not list(path.parent.glob(".*tmp"))
+
+
+def test_info_keeps_fields_it_does_not_know(orca_tree):
+    from orca_profiles_mcp.writer import read_info, write_info
+
+    info_path = orca_tree["user_dir"] / "process/My Fast.info"
+    info_path.write_text(
+        "sync_info = \nuser_id = uid-1\nsetting_id = \nbase_id = \n"
+        "updated_time = 1700000000\nfuture_field = keep me\n",
+        encoding="utf-8",
+    )
+    info = read_info(info_path)
+    write_info(info_path, info)
+    assert "future_field = keep me" in info_path.read_text(encoding="utf-8")
+
+
+# --- the delta check must not cry wolf ---
+
+
+def test_spelled_out_element_is_not_reported_as_engine_divergence(
+    orca_tree, write_profile
+):
+    """A file that writes a value the encoder would compress to nil is redundant."""
+    from orca_profiles_mcp.delta_check import check_profile_delta
+
+    register_machine(
+        orca_tree,
+        write_profile,
+        "Acme",
+        "Acme Pair",
+        {
+            "type": "machine",
+            "from": "system",
+            "instantiation": "true",
+            "printer_extruder_variant": ["0.4", "0.6"],
+            "retraction_length": ["2", "3"],
+        },
+    )
+    write_profile(
+        orca_tree["user_dir"] / "machine/Spelled Out.json",
+        {
+            "name": "Spelled Out",
+            "from": "User",
+            "version": "1.9.0.2",
+            "inherits": "Acme Pair",
+            "printer_extruder_variant": ["0.4", "0.6"],
+            # element 0 restates the parent instead of using "nil"
+            "retraction_length": ["2", "9"],
+        },
+    )
+    index, resolver, snapshot = build()
+    result = check_profile_delta(index, resolver, snapshot, "machine", "Spelled Out")
+    assert result["consistent"] is True
+    assert result["differing_values"] == {}

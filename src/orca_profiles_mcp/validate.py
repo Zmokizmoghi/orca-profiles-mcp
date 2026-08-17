@@ -81,10 +81,10 @@ def validate_library(
         parent_name = raw.get("inherits")
         if not parent_name:
             continue
-        parent_entry, _ = resolver._find_parent(entry.type, parent_name)
+        parent_entry, _ = resolver._find_parent(entry.type, parent_name, entry.vendor)
         if parent_entry is None:
             continue
-        parent_resolved = resolver.resolve(parent_entry.type, parent_entry.name)
+        parent_resolved = resolver.resolve_entry(parent_entry)
         for key, value in raw.items():
             if key in META_KEYS:
                 continue

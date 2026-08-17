@@ -11,6 +11,7 @@ Preset::save_info (Preset.cpp:623): the paired .info file is INI-formatted.
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import time
 from dataclasses import dataclass
@@ -142,11 +143,29 @@ def directory_indent(directory: Path) -> str:
     return max(counts.items(), key=lambda kv: kv[1])[0]
 
 
-def write_profile_json(path: Path, data: dict, indent: str) -> None:
+def _write_atomically(path: Path, text: str) -> None:
+    """Write through a temporary sibling and rename over the target.
+
+    A direct truncating write leaves a half-written profile if the process dies
+    or the disk fills — losing the file this tool exists to protect. os.replace
+    is atomic within a filesystem, so a reader sees either the old file or the
+    new one.
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps(data, ensure_ascii=False, indent=indent, sort_keys=True) + "\n",
-        encoding="utf-8",
+    tmp = path.with_name(f".{path.name}.tmp")
+    try:
+        with open(tmp, "w", encoding="utf-8") as handle:
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp, path)
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
+def write_profile_json(path: Path, data: dict, indent: str) -> None:
+    _write_atomically(
+        path, json.dumps(data, ensure_ascii=False, indent=indent, sort_keys=True) + "\n"
     )
 
 
@@ -158,18 +177,20 @@ def read_info(path: Path) -> dict[str, str]:
         if "=" not in line:
             continue
         key, _, value = line.partition("=")
-        key = key.strip()
-        if key in INFO_FIELDS:
-            info[key] = value.strip()
+        # unknown fields are kept so a rewrite does not drop them
+        info[key.strip()] = value.strip()
     return info
 
 
 def write_info(path: Path, info: dict[str, str]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        "".join(f"{field} = {info.get(field, '')}\n" for field in INFO_FIELDS),
-        encoding="utf-8",
+    known = "".join(f"{field} = {info.get(field, '')}\n" for field in INFO_FIELDS)
+    # Fields a newer Orca may have added are carried through untouched.
+    extra = "".join(
+        f"{key} = {value}\n"
+        for key, value in info.items()
+        if key not in INFO_FIELDS
     )
+    _write_atomically(path, known + extra)
 
 
 def compute_delta(
@@ -287,7 +308,15 @@ class Writer:
         delta = compute_delta(parent_values, target, ptype, self.snapshot, raw)
 
         meta = {k: v for k, v in raw.items() if k in META_KEYS}
-        data = {**meta, **delta}
+        # Keys the pinned snapshot does not know are carried through verbatim.
+        # The snapshot is tied to one Orca version; a newer engine's settings
+        # would otherwise be silently deleted from the file on the next edit.
+        unknown = {
+            k: v
+            for k, v in raw.items()
+            if k not in META_KEYS and not self.snapshot.is_known_key(k)
+        }
+        data = {**meta, **unknown, **delta}
         removed = sorted(set(raw) - set(data))
 
         backup_path = self._write(entry, data, backup)
@@ -320,6 +349,10 @@ class Writer:
             raise RuntimeError("no user profile directory found")
 
         path = user_dir / ptype / f"{name}.json"
+        # The index skips unreadable files and keys entries by the profile's
+        # internal name, so index membership is not proof the path is free.
+        if path.exists():
+            raise ValueError(f"a file already exists at {path}")
         data = {
             **values,
             # identity fields are written last: they define the profile and must
@@ -367,6 +400,8 @@ class Writer:
             raw[SETTINGS_ID_KEY[ptype]] = self._settings_id_value(ptype, new_name)
 
         new_path = entry.file.with_name(f"{new_name}.json")
+        if new_path.exists() and new_path != entry.file:
+            raise ValueError(f"a file already exists at {new_path}")
         write_profile_json(new_path, raw, detect_indent(entry.file))
         info = read_info(entry.file.with_suffix(".info"))
         info["updated_time"] = str(int(time.time()))
