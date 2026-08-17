@@ -43,11 +43,14 @@ def test_generic_fallback_is_reported(resolver):
     assert "generic_fallback" in {d.code for d in resolved.diagnostics}
 
 
-def test_parent_is_resolved_within_the_same_vendor_first(orca_tree, write_profile):
-    """Base profiles share names across vendors; a profile must get its own.
+def test_parent_lookup_is_global_like_the_engine(orca_tree, write_profile):
+    """Same-named base profiles resolve globally, not within the vendor.
 
-    fdm_machine_common exists in 64 of the bundled vendors, so a global lookup
-    would hand a Sovol printer Creality's base profile.
+    PresetCollection::find_preset2 searches the whole collection with no vendor
+    scoping. Preferring the profile's own vendor reads as the obvious choice,
+    but measured against the deltas Orca wrote it is wrong: 65/113 Voron and
+    221/565 Elegoo profiles mismatch under vendor scoping and none under the
+    global lookup.
     """
     bundle = orca_tree["resources"] / "profiles"
     # a second vendor shipping a same-named base profile with different values
@@ -89,10 +92,14 @@ def test_parent_is_resolved_within_the_same_vendor_first(orca_tree, write_profil
     index = ProfileIndex.build(discover())
     resolver = Resolver(index, EngineSnapshot.load())
 
+    # both children reach the same base — whichever vendor won the global index
+    winner = index.get("machine", "fdm_machine_common")
     other = resolver.resolve("machine", "Other Printer")
-    assert other.chain[1].vendor == "Other"
-    assert other.values["retraction_length"].value == ["9.9"]
-
     acme = resolver.resolve("machine", "Acme One 0.4 nozzle")
-    assert acme.chain[1].vendor == "Acme"
-    assert acme.values["retraction_length"].value == ["0.8"]
+
+    assert other.chain[1].vendor == winner.vendor
+    assert acme.chain[1].vendor == winner.vendor
+    assert (
+        other.values["retraction_length"].value
+        == acme.values["retraction_length"].value
+    )

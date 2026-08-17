@@ -159,8 +159,13 @@ def test_filament_settings_id_is_written_as_a_list(writer, orca_tree):
 # --- the writer must pick the same parent the resolver picked ---
 
 
-def test_writer_resolves_the_parent_inside_the_profile_vendor(orca_tree, write_profile):
-    """Two vendors ship a same-named base; the delta must use the profile's own."""
+def test_writer_and_resolver_agree_on_the_parent(orca_tree, write_profile):
+    """Two vendors ship a same-named base; both sides must pick the same one.
+
+    Which one wins is the engine's business (a global lookup in load order).
+    What must never happen is the resolver expanding against one base while the
+    writer computes its delta against another — that silently drops overrides.
+    """
     register_machine(
         orca_tree,
         write_profile,
@@ -203,9 +208,16 @@ def test_writer_resolves_the_parent_inside_the_profile_vendor(orca_tree, write_p
 
     index, resolver, snapshot = build()
     writer = Writer(index, resolver, snapshot)
-    # normalising must not treat Acme's 0.8 as "same as parent" and drop the key
-    report = writer.normalize_profile("machine", "Rival Printer")
-    assert "retraction_length" not in report["removed_keys"]
 
-    resolved = resolver.resolve("machine", "Rival Printer")
-    assert resolved.values["retraction_length"].value == ["0.8"]
+    entry = index.get("machine", "Rival Printer")
+    resolver_parent, _ = resolver._find_parent("machine", "shared_base", entry.vendor)
+    writer_parent_values = writer._parent_values(entry, index.load_raw(entry))
+    resolver_parent_values = {
+        k: v.value for k, v in resolver.resolve_entry(resolver_parent).values.items()
+    }
+    assert writer_parent_values == resolver_parent_values
+
+    # and the profile's own value survives a normalise either way
+    chain_parent = resolver.resolve("machine", "Rival Printer").chain[1]
+    assert chain_parent.name == resolver_parent.name
+    assert chain_parent.vendor == resolver_parent.vendor

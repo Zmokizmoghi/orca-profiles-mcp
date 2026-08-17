@@ -55,13 +55,13 @@ class Resolver:
     def _find_parent(
         self, ptype: str, name: str, vendor: str = ""
     ) -> tuple[IndexEntry | None, str]:
-        # Base profiles reuse the same name across vendors (fdm_machine_common
-        # exists in 64 of them), so a profile's own vendor wins before the
-        # global lookup — otherwise a Sovol printer inherits Creality's base.
-        own = self.index.get_in_vendor(ptype, vendor, name)
-        if own is not None:
-            return own, "exact"
-
+        # Deliberately global, matching the engine: PresetCollection::find_preset2
+        # searches the whole collection in load order with no vendor scoping,
+        # even though base names like fdm_machine_common repeat across 64
+        # vendors. Preferring a profile's own vendor is intuitive but wrong —
+        # measured against the deltas Orca wrote, it mismatches 65/113 Voron and
+        # 221/565 Elegoo profiles, where the global lookup mismatches none.
+        # The `vendor` argument is kept for call-site symmetry and diagnostics.
         entry = self.index.get(ptype, name)
         if entry is not None:
             return entry, "exact"
