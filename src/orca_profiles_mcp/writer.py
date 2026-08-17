@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .index import IndexEntry, ProfileIndex
+from .index import IndexEntry, ProfileIndex, UnreadableProfile
 from .models import META_KEYS
 from .resolver import Resolver
 from .snapshot import EngineSnapshot
@@ -261,6 +261,22 @@ class Writer:
         resolved = self.resolver.resolve_entry(parent_entry)
         return {key: rv.value for key, rv in resolved.values.items()}
 
+    def _require_force_outside_user(self, entry: IndexEntry, force: bool) -> None:
+        """System and bundled profiles are shared; touching one needs intent.
+
+        They are owned by a vendor library, are restored by the next profile
+        update, and every descendant inherits the change. Editing one can be
+        right — it is simply not something to do by accident.
+        """
+        if entry.source != "user" and not force:
+            children = self.index.children_of(entry.type, entry.name)
+            raise ValueError(
+                f"{entry.name!r} belongs to {entry.source!r}, not to your own "
+                f"profiles; {len(children)} profiles inherit from it and a "
+                f"library update will overwrite the change. Pass force=True to "
+                f"proceed anyway"
+            )
+
     def _warnings_for(self, entry: IndexEntry) -> list[str]:
         warnings = []
         if entry.source != "user":
@@ -292,12 +308,24 @@ class Writer:
     # --- operations ---
 
     def set_values(
-        self, ptype: str, name: str, values: dict[str, Any], backup: bool = True
+        self,
+        ptype: str,
+        name: str,
+        values: dict[str, Any],
+        backup: bool = True,
+        force: bool = False,
     ) -> dict:
         entry = self.index.get(ptype, name)
         if entry is None:
             raise KeyError(f"profile not found: {ptype}/{name}")
-        raw = dict(self.index.load_raw(entry))
+        self._require_force_outside_user(entry, force)
+        loaded = self.index.load_raw(entry)
+        if isinstance(loaded, UnreadableProfile):
+            raise ValueError(
+                f"{entry.file} cannot be read ({loaded.reason}); refusing to "
+                f"overwrite it and lose whatever it holds"
+            )
+        raw = dict(loaded)
         validate_values(self.snapshot, ptype, values)
 
         resolved = self.resolver.resolve(ptype, name)
@@ -321,6 +349,7 @@ class Writer:
 
         backup_path = self._write(entry, data, backup)
         self.index.invalidate(entry)
+        self.resolver.forget()
         return {
             "file": str(entry.file),
             "written_keys": sorted(delta),
@@ -376,6 +405,7 @@ class Writer:
             },
         )
         self.index.add_user_profile(ptype, name, path)
+        self.resolver.forget()
         return {
             "file": str(path),
             "written_keys": sorted(values),
@@ -413,26 +443,43 @@ class Writer:
         children = self.index.children_of(ptype, name)
         self.index.remove_profile(ptype, name)
         self.index.add_user_profile(ptype, new_name, new_path)
-        warnings = (
-            [
-                "profiles still referencing the old name: "
-                + ", ".join(c.name for c in children)
-            ]
-            if children
-            else []
-        )
+        self.resolver.forget()
+
+        # Children reference a parent by name, so leaving them behind would make
+        # every one of them unloadable. Those we own are repointed; those we do
+        # not are reported, since editing a vendor library is a separate decision.
+        updated, stranded = [], []
+        for child in children:
+            child_raw = self.index.load_raw(child)
+            if child.source != "user" or isinstance(child_raw, UnreadableProfile):
+                stranded.append(child.name)
+                continue
+            body = dict(child_raw)
+            body["inherits"] = new_name
+            write_profile_json(child.file, body, detect_indent(child.file))
+            self.index.invalidate(child)
+            updated.append(child.name)
+
+        warnings = []
+        if stranded:
+            warnings.append(
+                "these profiles still inherit from the old name and will not "
+                f"load: {', '.join(stranded)}"
+            )
         return {
             "file": str(new_path),
             "written_keys": [],
             "removed_keys": [],
+            "updated_children": updated,
             "backup": None,
             "warnings": warnings,
         }
 
-    def delete_profile(self, ptype: str, name: str) -> dict:
+    def delete_profile(self, ptype: str, name: str, force: bool = False) -> dict:
         entry = self.index.get(ptype, name)
         if entry is None:
             raise KeyError(f"profile not found: {ptype}/{name}")
+        self._require_force_outside_user(entry, force)
         warnings = self._warnings_for(entry)
 
         info_path = entry.file.with_suffix(".info")
@@ -446,6 +493,7 @@ class Writer:
             info_path.unlink(missing_ok=True)
 
         self.index.remove_profile(ptype, name)
+        self.resolver.forget()
         return {
             "file": str(entry.file),
             "written_keys": [],
@@ -454,5 +502,7 @@ class Writer:
             "warnings": warnings,
         }
 
-    def normalize_profile(self, ptype: str, name: str, backup: bool = True) -> dict:
-        return self.set_values(ptype, name, {}, backup=backup)
+    def normalize_profile(
+        self, ptype: str, name: str, backup: bool = True, force: bool = False
+    ) -> dict:
+        return self.set_values(ptype, name, {}, backup=backup, force=force)

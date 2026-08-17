@@ -142,12 +142,14 @@ def compare_with_upstream(type: str, name: str, ref: str = "main") -> dict:
 @server.tool(
     description=(
         "Set profile values. The delta against the parent is recomputed "
-        "automatically and the paired .info is updated. Editing a shared "
-        "profile affects every descendant"
+        "automatically and the paired .info is updated. Editing a system or "
+        "bundled profile affects every descendant and needs force=True"
     )
 )
-def set_values(type: str, name: str, values: dict, backup: bool = True) -> dict:
-    return service().set_values(type, name, values, backup=backup)
+def set_values(
+    type: str, name: str, values: dict, backup: bool = True, force: bool = False
+) -> dict:
+    return service().set_values(type, name, values, backup=backup, force=force)
 
 
 @server.tool(description="Create a user profile inheriting from the given one")
@@ -161,15 +163,17 @@ def rename_profile(type: str, name: str, new_name: str) -> dict:
 
 
 @server.tool(
-    description="Delete a profile; for cloud-synced ones the .info file is flagged instead"
+    description="Delete a profile; deleting outside your own profiles needs force=True, and cloud-synced ones keep a flagged .info"
 )
-def delete_profile(type: str, name: str) -> dict:
-    return service().delete_profile(type, name)
+def delete_profile(type: str, name: str, force: bool = False) -> dict:
+    return service().delete_profile(type, name, force=force)
 
 
 @server.tool(description="Drop keys whose values are identical to the parent's")
-def normalize_profile(type: str, name: str, backup: bool = True) -> dict:
-    return service().normalize_profile(type, name, backup=backup)
+def normalize_profile(
+    type: str, name: str, backup: bool = True, force: bool = False
+) -> dict:
+    return service().normalize_profile(type, name, backup=backup, force=force)
 
 
 def main() -> None:

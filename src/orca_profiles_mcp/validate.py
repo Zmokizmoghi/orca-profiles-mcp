@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from .index import IndexEntry, ProfileIndex
+from .index import IndexEntry, ProfileIndex, UnreadableProfile
 from .models import META_KEYS, Diagnostic
 from .resolver import Resolver
 from .snapshot import EngineSnapshot
@@ -44,6 +44,17 @@ def validate_library(
         if not _in_scope(entry, scope):
             continue
         raw = index.load_raw(entry)
+        if isinstance(raw, UnreadableProfile):
+            results.append(
+                Diagnostic(
+                    "error",
+                    "unreadable_file",
+                    f"{entry.name}: {raw.reason} ({entry.file}); Orca cannot load it "
+                    f"either, and anything inheriting from it loses those settings",
+                    link=entry.name,
+                )
+            )
+            continue
 
         for key in raw:
             if key in META_KEYS:

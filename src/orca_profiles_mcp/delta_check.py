@@ -88,11 +88,27 @@ def check_profile_delta(
 
     only_stored = sorted(set(stored) - set(recomputed))
     only_recomputed = sorted(set(recomputed) - set(stored))
-    differing = {
-        key: {"stored": stored[key], "recomputed": recomputed[key]}
-        for key in sorted(set(stored) & set(recomputed))
-        if comparable(key, stored[key]) != comparable(key, recomputed[key])
-    }
+    differing = {}
+    length_only = {}
+    for key in sorted(set(stored) & set(recomputed)):
+        left, right = comparable(key, stored[key]), comparable(key, recomputed[key])
+        if left == right:
+            continue
+        entry_pair = {"stored": stored[key], "recomputed": recomputed[key]}
+        # A file saved while the machine had more extruders than the profile
+        # itself declares keeps the longer vector. Nothing in the file records
+        # that context, so the length cannot be reproduced — it is a limit of
+        # the data, not a disagreement about inheritance.
+        if (
+            isinstance(left, list)
+            and isinstance(right, list)
+            and len(left) > len(right)
+            and left[: len(right)] == right
+            and len(set(left)) == 1
+        ):
+            length_only[key] = entry_pair
+        else:
+            differing[key] = entry_pair
 
     return {
         "name": name,
@@ -107,6 +123,8 @@ def check_profile_delta(
         # These two mean the resolver and the engine disagree about the parent.
         "we_would_add": only_recomputed,
         "differing_values": differing,
+        # Vectors the file stores longer than this profile can account for.
+        "unexplained_vector_length": length_only,
         "consistent": not (only_recomputed or differing),
         "redundant_only": bool(only_stored) and not (only_recomputed or differing),
     }
@@ -134,6 +152,7 @@ def check_library_deltas(
     checked = [r for r in results if r["checked"]]
     mismatched = [r for r in checked if not r["consistent"]]
     redundant = [r for r in checked if r.get("redundant_only")]
+    length_only = [r for r in checked if r.get("unexplained_vector_length")]
     return {
         "scope": scope,
         "profiles": len(results),
@@ -141,6 +160,7 @@ def check_library_deltas(
         "skipped": len(results) - len(checked),
         "mismatched": len(mismatched),
         "with_redundant_keys": len(redundant),
+        "with_unexplained_vector_length": len(length_only),
         "details": mismatched,
         "redundant": [
             {"name": r["name"], "type": r["type"], "keys": r["redundant_in_file"]}

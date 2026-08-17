@@ -41,6 +41,10 @@ class ResolvedValue:
     origin_file: str
     overridden: list[Override] = field(default_factory=list)
     is_default: bool = False
+    # For variant vectors, which link supplied each element. A child that
+    # changes one extruder leaves the others sourced from its parent, and a
+    # single origin for the whole vector would misattribute them.
+    element_origins: list[str] | None = None
 
 
 @dataclass
@@ -73,3 +77,7 @@ class ResolvedProfile:
     chain: list[ChainLink] = field(default_factory=list)
     values: dict[str, ResolvedValue] = field(default_factory=dict)
     diagnostics: list[Diagnostic] = field(default_factory=list)
+    # False when Orca would refuse to load this profile at all — a missing
+    # parent, a cycle, or an unreadable file. The values are still returned so
+    # the problem can be inspected, but they are not what the slicer would use.
+    usable: bool = True

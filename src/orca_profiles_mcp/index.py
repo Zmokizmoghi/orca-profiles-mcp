@@ -39,6 +39,19 @@ def _load_json(path: Path) -> dict | None:
         return None
 
 
+class UnreadableProfile(dict):
+    """An empty mapping that remembers why the file could not be read.
+
+    A failed read used to become a plain `{}`, indistinguishable from a profile
+    that genuinely sets nothing — so a corrupt file silently resolved to engine
+    defaults with no diagnostic anywhere.
+    """
+
+    def __init__(self, reason: str) -> None:
+        super().__init__()
+        self.reason = reason
+
+
 class ProfileIndex:
     def __init__(
         self,
@@ -46,11 +59,9 @@ class ProfileIndex:
         shadowed: dict[tuple[str, str], list[IndexEntry]],
         user_dir: Path | None = None,
         user_id: str | None = None,
-        by_vendor: dict[tuple[str, str, str], IndexEntry] | None = None,
     ) -> None:
         self._entries = entries
         self._shadowed = shadowed
-        self._by_vendor = by_vendor or {}
         self._user_dir = user_dir
         self._user_id = user_id
         self._raw_cache: dict[Path, dict] = {}
@@ -63,12 +74,8 @@ class ProfileIndex:
     def build(cls, setup: Setup) -> "ProfileIndex":
         entries: dict[tuple[str, str], IndexEntry] = {}
         shadowed: dict[tuple[str, str], list[IndexEntry]] = {}
-        by_vendor: dict[tuple[str, str, str], IndexEntry] = {}
-
         def add(entry: IndexEntry) -> None:
             key = (entry.type, entry.name)
-            if entry.vendor:
-                by_vendor.setdefault((entry.type, entry.vendor, entry.name), entry)
             if key in entries:
                 shadowed.setdefault(key, []).append(entry)
             else:
@@ -103,12 +110,12 @@ class ProfileIndex:
                     continue
                 for path in sorted(type_dir.rglob("*.json")):
                     data = _load_json(path)
-                    if not isinstance(data, dict):
-                        continue
-                    name = data.get("name") or path.stem
+                    # An unreadable file is still indexed, under its filename, so
+                    # it can be reported rather than vanishing from every view.
+                    name = data.get("name") or path.stem if isinstance(data, dict) else path.stem
                     add(IndexEntry(ptype, name, "", "user", path))
 
-        return cls(entries, shadowed, setup.user_dir, setup.user_id, by_vendor)
+        return cls(entries, shadowed, setup.user_dir, setup.user_id)
 
     # --- access ---
 
@@ -123,25 +130,22 @@ class ProfileIndex:
     def get(self, ptype: str, name: str) -> IndexEntry | None:
         return self._entries.get((ptype, name))
 
-    def get_in_vendor(self, ptype: str, vendor: str, name: str) -> IndexEntry | None:
-        """Look the name up inside one vendor only.
-
-        Base profiles share names across vendors — 64 of them ship a machine
-        profile called fdm_machine_common — so a global lookup would hand a
-        Sovol printer Creality's base. Each vendor lists its own profiles in
-        <Vendor>.json, which makes ownership unambiguous.
-        """
-        if not vendor:
-            return None
-        return self._by_vendor.get((ptype, vendor, name))
-
     def all(self, ptype: str | None = None) -> list[IndexEntry]:
         return [e for e in self._entries.values() if ptype is None or e.type == ptype]
 
     def load_raw(self, entry: IndexEntry) -> dict:
         cached = self._raw_cache.get(entry.file)
         if cached is None:
-            cached = _load_json(entry.file) or {}
+            loaded = _load_json(entry.file)
+            if loaded is None:
+                reason = (
+                    "file is missing"
+                    if not entry.file.exists()
+                    else "file is not readable JSON"
+                )
+                cached = UnreadableProfile(reason)
+            else:
+                cached = loaded
             self._raw_cache[entry.file] = cached
         return cached
 
@@ -193,4 +197,13 @@ class ProfileIndex:
         entry = self._entries.pop((ptype, name), None)
         if entry is not None:
             self._raw_cache.pop(entry.file, None)
+        # A same-named profile from a lower-priority source now becomes visible,
+        # exactly as it would after the application reloaded its libraries.
+        shadowed = self._shadowed.get((ptype, name))
+        if shadowed:
+            self._entries[(ptype, name)] = shadowed.pop(0)
+            if not shadowed:
+                self._shadowed.pop((ptype, name), None)
+        else:
+            self._shadowed.pop((ptype, name), None)
         self._reset_derived()

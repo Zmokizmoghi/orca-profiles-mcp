@@ -25,13 +25,17 @@ ORCA_RUNNING_NOTE = (
 def _value_payload(rv: ResolvedValue, traced: bool) -> Any:
     if not traced:
         return rv.value
-    return {
+    payload = {
         "value": rv.value,
         "origin": rv.origin,
         "origin_file": rv.origin_file,
         "is_default": rv.is_default,
         "overridden": [{"link": o.link, "value": o.value} for o in rv.overridden],
     }
+    # only interesting when the elements do not all come from the same link
+    if rv.element_origins and len(set(rv.element_origins)) > 1:
+        payload["element_origins"] = rv.element_origins
+    return payload
 
 
 @dataclass
@@ -120,6 +124,10 @@ class Service:
         include_defaults: bool = False,
         limit: int = 400,
     ) -> dict:
+        if mode not in ("raw", "resolved", "traced"):
+            raise ValueError(
+                f"unknown mode {mode!r}; expected raw, resolved or traced"
+            )
         entry = self.index.get(type, name)
         if entry is None:
             raise KeyError(f"profile not found: {type}/{name}")
@@ -164,6 +172,7 @@ class Service:
             "total_keys": len(selected),
             "returned_keys": len(ordered),
             "omitted_defaults": omitted_defaults,
+            "usable": resolved.usable,
             "values": {k: _value_payload(rv, traced) for k, rv in ordered.items()},
             "diagnostics": [
                 {"severity": d.severity, "code": d.code, "message": d.message}
@@ -185,6 +194,7 @@ class Service:
         return {
             "name": name,
             "type": type,
+            "usable": resolved.usable,
             "chain": [
                 {
                     "name": link.name,
@@ -221,6 +231,7 @@ class Service:
             "origin": rv.origin,
             "origin_file": rv.origin_file,
             "is_default": rv.is_default,
+            "element_origins": rv.element_origins,
             "overridden": [{"link": o.link, "value": o.value} for o in rv.overridden],
             "engine_default": self.snapshot.defaults.get(key),
             "category": self.snapshot.categories.get(key),
@@ -245,15 +256,21 @@ class Service:
         }
 
     def diff_profiles(self, type: str, a: str, b: str, mode: str = "resolved") -> dict:
+        if mode not in ("raw", "resolved"):
+            raise ValueError(f"unknown mode {mode!r}; expected raw or resolved")
+
         def values_of(name: str) -> dict[str, Any]:
             if mode == "raw":
                 entry = self.index.get(type, name)
                 if entry is None:
                     raise KeyError(f"profile not found: {type}/{name}")
+                # `inherits` is kept: two profiles with identical bodies but
+                # different parents are not the same profile.
+                keep = META_KEYS - {"inherits"}
                 return {
                     k: v
                     for k, v in self.index.load_raw(entry).items()
-                    if k not in META_KEYS
+                    if k not in keep
                 }
             return {
                 k: rv.value for k, rv in self.resolver.resolve(type, name).values.items()
@@ -268,6 +285,11 @@ class Service:
         return {"a": a, "b": b, "type": type, "mode": mode, "differences": differences}
 
     def compare_with_upstream(self, type: str, name: str, ref: str = "main") -> dict:
+        if type not in PROFILE_TYPES:
+            raise ValueError(
+                f"cannot compare {type!r} against upstream; expected one of "
+                f"{', '.join(PROFILE_TYPES)}"
+            )
         entry = self.index.get(type, name)
         if entry is None:
             raise KeyError(f"profile not found: {type}/{name}")
@@ -343,9 +365,16 @@ class Service:
         return {**report, "orca_running_warning": ORCA_RUNNING_NOTE}
 
     def set_values(
-        self, type: str, name: str, values: dict[str, Any], backup: bool = True
+        self,
+        type: str,
+        name: str,
+        values: dict[str, Any],
+        backup: bool = True,
+        force: bool = False,
     ) -> dict:
-        return self._report(self.writer.set_values(type, name, values, backup=backup))
+        return self._report(
+            self.writer.set_values(type, name, values, backup=backup, force=force)
+        )
 
     def create_profile(
         self, type: str, name: str, inherits: str, values: dict[str, Any]
@@ -355,11 +384,15 @@ class Service:
     def rename_profile(self, type: str, name: str, new_name: str) -> dict:
         return self._report(self.writer.rename_profile(type, name, new_name))
 
-    def delete_profile(self, type: str, name: str) -> dict:
-        return self._report(self.writer.delete_profile(type, name))
+    def delete_profile(self, type: str, name: str, force: bool = False) -> dict:
+        return self._report(self.writer.delete_profile(type, name, force=force))
 
-    def normalize_profile(self, type: str, name: str, backup: bool = True) -> dict:
-        return self._report(self.writer.normalize_profile(type, name, backup=backup))
+    def normalize_profile(
+        self, type: str, name: str, backup: bool = True, force: bool = False
+    ) -> dict:
+        return self._report(
+            self.writer.normalize_profile(type, name, backup=backup, force=force)
+        )
 
 
 def build_service() -> Service:

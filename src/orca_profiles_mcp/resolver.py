@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import re
 
-from .index import IndexEntry, ProfileIndex
+from .index import IndexEntry, ProfileIndex, UnreadableProfile
 from .models import (
     META_KEYS,
     ChainLink,
@@ -18,6 +18,8 @@ from .models import (
     ResolvedProfile,
     ResolvedValue,
 )
+from pathlib import Path
+from typing import Any
 from .snapshot import EngineSnapshot
 from .variants import VariantContext, extend_to_length, merge_key, variant_index
 
@@ -27,6 +29,23 @@ MAX_CHAIN_DEPTH = 32
 # name contains "Generic", it is rewritten to "Generic <material> @System",
 # which belongs to the OrcaFilamentLibrary vendor.
 _GENERIC_RE = re.compile(r"^(?:.*?\b(?:\w+_)?)(Generic)\b\s+([^@]+?)\s*(?:@.*)?$")
+
+
+def _element_origins(
+    merged: Any, parent_value: Any, previous: ResolvedValue | None, link_name: str
+) -> list[str] | None:
+    """Attribute each vector element to the link that actually supplied it."""
+    if not isinstance(merged, list):
+        return None
+    if not isinstance(parent_value, list) or previous is None:
+        return [link_name] * len(merged)
+    inherited_origins = previous.element_origins or [previous.origin] * len(parent_value)
+    return [
+        inherited_origins[i]
+        if i < len(parent_value) and i < len(inherited_origins) and item == parent_value[i]
+        else link_name
+        for i, item in enumerate(merged)
+    ]
 
 
 def _variant_slots(ptype: str, raw: dict, variants: list[str]) -> int:
@@ -49,6 +68,17 @@ class Resolver:
     def __init__(self, index: ProfileIndex, snapshot: EngineSnapshot) -> None:
         self.index = index
         self.snapshot = snapshot
+        # Expansions are memoised per file: validating the whole library
+        # re-expands every parent once per child, and popular bases have
+        # hundreds of children.
+        self._cache: dict[Path, ResolvedProfile] = {}
+
+    def forget(self, entry: IndexEntry | None = None) -> None:
+        """Drop memoised expansions after a write."""
+        if entry is None:
+            self._cache.clear()
+        else:
+            self._cache.pop(entry.file, None)
 
     # --- parent name resolution ---
 
@@ -90,7 +120,18 @@ class Resolver:
         current = entry
 
         while len(chain) < MAX_CHAIN_DEPTH:
-            parent_name = self.index.load_raw(current).get("inherits")
+            current_raw = self.index.load_raw(current)
+            if isinstance(current_raw, UnreadableProfile):
+                diagnostics.append(
+                    Diagnostic(
+                        "error",
+                        "unreadable_file",
+                        f"{current.name}: {current_raw.reason} ({current.file})",
+                        link=current.name,
+                    )
+                )
+                break
+            parent_name = current_raw.get("inherits")
             if not parent_name:
                 break
             if (current.type, parent_name) in seen:
@@ -225,6 +266,9 @@ class Resolver:
                     origin_file=str(entry.file),
                     overridden=overridden,
                     is_default=False,
+                    element_origins=_element_origins(
+                        merged, parent_value, previous, entry.name
+                    ),
                 )
 
             if child_variants:
@@ -249,6 +293,14 @@ class Resolver:
         again would go through the global index and can land on a same-named
         profile from another vendor.
         """
+        cached = self._cache.get(entry.file)
+        if cached is not None and cached.name == entry.name:
+            return cached
+        resolved = self._expand(entry)
+        self._cache[entry.file] = resolved
+        return resolved
+
+    def _expand(self, entry: IndexEntry) -> ResolvedProfile:
         ptype = entry.type
         diagnostics: list[Diagnostic] = []
         chain = self._build_chain(entry, diagnostics)
@@ -269,6 +321,11 @@ class Resolver:
                 )
             )
 
+        # Orca skips a profile whose parent it cannot resolve, so the expansion
+        # below is an explanation of the problem, not what the slicer would use.
+        blocking = {"missing_parent", "cycle", "chain_too_deep", "unreadable_file"}
+        usable = not any(d.code in blocking for d in diagnostics)
+
         return ResolvedProfile(
             name=entry.name,
             type=entry.type,
@@ -278,4 +335,5 @@ class Resolver:
             chain=links,
             values=values,
             diagnostics=diagnostics,
+            usable=usable,
         )

@@ -26,9 +26,16 @@ def test_set_values_rejects_unknown_key(service):
         service.set_values("process", "My Fast", {"no_such_setting": "1"})
 
 
-def test_set_values_warns_when_editing_shared_profile(service):
+def test_editing_a_shared_profile_requires_force(service):
+    with pytest.raises(ValueError, match="force"):
+        service.set_values(
+            "process", "0.20mm Standard @Acme", {"top_shell_layers": "6"}
+        )
+
+
+def test_forced_edit_of_a_shared_profile_still_warns(service):
     report = service.set_values(
-        "process", "0.20mm Standard @Acme", {"top_shell_layers": "6"}
+        "process", "0.20mm Standard @Acme", {"top_shell_layers": "6"}, force=True
     )
     assert any("bundle" in w for w in report["warnings"])
     assert any("inherit from it" in w for w in report["warnings"])
