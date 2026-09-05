@@ -50,6 +50,25 @@ class Service:
 
     # --- orientation ---
 
+    def _ambiguous_user_dir_note(self) -> str | None:
+        """Say so when more than one profile tree exists.
+
+        Orca writes into user/<account-id> while signed in and user/default
+        while signed out, and its config records neither. Guessing silently
+        means profiles can land where the running application never looks.
+        """
+        dirs = getattr(self.setup, "user_dirs", ()) or ()
+        if len(dirs) < 2:
+            return None
+        others = ", ".join(d.name for d in dirs if d != self.setup.user_dir)
+        return (
+            f"several user profile directories exist; using "
+            f"{self.setup.user_dir.name!r} (chosen as the most recently written). "
+            f"Also present: {others}. Orca uses 'default' when signed out and "
+            f"the account directory when signed in — set ORCA_USER_DIR to pick "
+            f"explicitly if profiles do not appear in the application"
+        )
+
     def get_setup(self) -> dict:
         return {
             "datadir": str(self.setup.datadir),
@@ -58,6 +77,8 @@ class Service:
             "engine_snapshot_version": self.snapshot.orca_version,
             "user_id": self.setup.user_id,
             "user_dir": str(self.setup.user_dir) if self.setup.user_dir else None,
+            "user_dirs": [str(d) for d in (getattr(self.setup, "user_dirs", ()) or ())],
+            "user_dir_warning": self._ambiguous_user_dir_note(),
             "vendor_roots": [
                 {"source": r.source, "path": str(r.path)}
                 for r in self.setup.vendor_roots
@@ -398,7 +419,15 @@ class Service:
     # --- writing ---
 
     def _report(self, report: dict) -> dict:
-        return {**report, "orca_running_warning": ORCA_RUNNING_NOTE}
+        warnings = list(report.get("warnings") or [])
+        note = self._ambiguous_user_dir_note()
+        if note:
+            warnings.append(note)
+        return {
+            **report,
+            "warnings": warnings,
+            "orca_running_warning": ORCA_RUNNING_NOTE,
+        }
 
     def set_values(
         self,

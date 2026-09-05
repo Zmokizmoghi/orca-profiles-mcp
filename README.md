@@ -62,6 +62,21 @@ and `"100%"` stays a percentage. The engine normalises both when it slices;
 this server does not, so what you read is what the profile says and what gets
 written back is unchanged.
 
+## Which profile tree it reads
+
+Orca keeps one profile tree per signed-in account under `user/<account-id>`,
+and writes into `user/default` when signed out. Its config records neither, so
+when both exist the server picks the most recently written one and says so in
+`get_setup` and in every write report. If profiles you create do not show up in
+the application, you are on the other tree — point `ORCA_USER_DIR` at it:
+
+```bash
+ORCA_USER_DIR="$HOME/Library/Application Support/OrcaSlicer/user/default"
+```
+
+Sync backups in dot-directories (`.sync_bak`) are ignored; they are copies, not
+live profiles.
+
 ## Writing profiles
 
 Your own profiles are edited freely. Touching a system or bundled one requires

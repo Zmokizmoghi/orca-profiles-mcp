@@ -32,24 +32,62 @@ class Setup:
     vendor_roots: tuple[VendorRoot, ...]
     app_version: str | None
     selected: dict[str, str] = field(default_factory=dict)
+    # Every profile tree found, not just the chosen one. Orca keeps one per
+    # signed-in account and uses `default` when signed out, and nothing in its
+    # config says which is live — so the ambiguity is surfaced, not hidden.
+    user_dirs: tuple[Path, ...] = ()
 
 
-def _pick_user_dir(datadir: Path) -> tuple[str | None, Path | None]:
-    """The active user directory is the one holding profile subdirectories."""
+def _newest_profile_mtime(directory: Path) -> float:
+    """When this tree was last written, judged by its profiles, not the folder.
+
+    A directory's own mtime only changes when entries are added or removed, so
+    a tree whose profiles were all edited yesterday can look older than one
+    nobody has touched in months.
+    """
+    newest = 0.0
+    for ptype in PROFILE_TYPES:
+        type_dir = directory / ptype
+        if not type_dir.is_dir():
+            continue
+        for path in type_dir.rglob("*.json"):
+            if any(part.startswith(".") for part in path.relative_to(type_dir).parts):
+                continue
+            try:
+                newest = max(newest, path.stat().st_mtime)
+            except OSError:
+                continue
+    return newest or directory.stat().st_mtime
+
+
+def _find_user_dirs(datadir: Path) -> list[Path]:
+    """Every tree that holds profiles, `default` included.
+
+    `default` is where Orca writes when no account is signed in, so excluding
+    it means reading and writing a tree the running application ignores.
+    """
     root = datadir / "user"
     if not root.is_dir():
-        return None, None
-    candidates = [
-        d
-        for d in root.iterdir()
-        if d.is_dir()
-        and d.name != "default"
-        and any((d / t).is_dir() for t in PROFILE_TYPES)
-    ]
+        return []
+    return sorted(
+        (d for d in root.iterdir()
+         if d.is_dir() and any((d / t).is_dir() for t in PROFILE_TYPES)),
+        key=lambda d: d.name,
+    )
+
+
+def _pick_user_dir(datadir: Path) -> tuple[str | None, Path | None, list[Path]]:
+    candidates = _find_user_dirs(datadir)
     if not candidates:
-        return None, None
-    chosen = max(candidates, key=lambda d: d.stat().st_mtime)
-    return chosen.name, chosen
+        return None, None, []
+
+    override = os.environ.get("ORCA_USER_DIR")
+    if override:
+        chosen = Path(override)
+        return chosen.name, chosen, candidates
+
+    chosen = max(candidates, key=_newest_profile_mtime)
+    return chosen.name, chosen, candidates
 
 
 def _read_conf(datadir: Path) -> tuple[str | None, dict[str, str]]:
@@ -78,7 +116,7 @@ def discover(datadir: Path | None = None, resources: Path | None = None) -> Setu
     if (resources / "profiles").is_dir():
         roots.append(VendorRoot("bundle", resources / "profiles"))
 
-    user_id, user_dir = _pick_user_dir(datadir)
+    user_id, user_dir, user_dirs = _pick_user_dir(datadir)
     version, selected = _read_conf(datadir)
 
     return Setup(
@@ -89,4 +127,5 @@ def discover(datadir: Path | None = None, resources: Path | None = None) -> Setu
         vendor_roots=tuple(roots),
         app_version=version,
         selected=selected,
+        user_dirs=tuple(user_dirs),
     )
