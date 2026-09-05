@@ -113,11 +113,17 @@ def diff_profiles(type: str, a: str, b: str, mode: str = "resolved") -> dict:
 @server.tool(
     description=(
         "Integrity check: broken inherits, cycles, unknown keys, redundant "
-        "deltas, name collisions"
+        "deltas, name collisions. Returns counts per code plus the first "
+        "`limit` diagnostics; narrow with code= or severity="
     )
 )
-def validate(scope: str = "user") -> dict:
-    return service().validate(scope)
+def validate(
+    scope: str = "user",
+    code: str | None = None,
+    severity: str | None = None,
+    limit: int = 50,
+) -> dict:
+    return service().validate(scope, code=code, severity=severity, limit=limit)
 
 
 @server.tool(

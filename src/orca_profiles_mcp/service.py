@@ -5,6 +5,7 @@ Kept separate from server.py so it can be tested without the MCP transport.
 
 from __future__ import annotations
 
+from collections import Counter
 from dataclasses import dataclass
 from typing import Any
 
@@ -342,11 +343,46 @@ class Service:
 
         return check_library_deltas(self.index, self.resolver, self.snapshot, scope)
 
-    def validate(self, scope: str = "user") -> dict:
+    def validate(
+        self,
+        scope: str = "user",
+        code: str | None = None,
+        severity: str | None = None,
+        limit: int = 50,
+    ) -> dict:
+        """Check the library and summarise; the full list is opt-in via limit.
+
+        A user library easily produces hundreds of diagnostics, most of them
+        repetitions of a handful of causes. The counts say what is wrong, and
+        `code`/`severity` narrow the list to the part worth reading.
+        """
         diagnostics = validate_library(self.index, self.resolver, self.snapshot, scope)
+        by_code = Counter(d.code for d in diagnostics)
+        by_severity = Counter(d.severity for d in diagnostics)
+
+        selected = [
+            d
+            for d in diagnostics
+            if (code is None or d.code == code)
+            and (severity is None or d.severity == severity)
+        ]
+        # errors first: they are the ones that stop a profile from loading
+        rank = {"error": 0, "warning": 1, "info": 2}
+        selected.sort(key=lambda d: (rank.get(d.severity, 3), d.code, d.link or ""))
+
+        affected = Counter(d.link for d in selected if d.link)
         return {
             "scope": scope,
             "count": len(diagnostics),
+            "matched": len(selected),
+            "returned": min(len(selected), limit),
+            "by_severity": dict(by_severity),
+            "by_code": dict(by_code.most_common()),
+            "profiles_affected": len({d.link for d in diagnostics if d.link}),
+            "most_affected": [
+                {"name": n, "diagnostics": c} for n, c in affected.most_common(5)
+            ],
+            "filters": {"code": code, "severity": severity, "limit": limit},
             "diagnostics": [
                 {
                     "severity": d.severity,
@@ -355,7 +391,7 @@ class Service:
                     "link": d.link,
                     "key": d.key,
                 }
-                for d in diagnostics
+                for d in selected[:limit]
             ],
         }
 

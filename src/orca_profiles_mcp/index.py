@@ -109,6 +109,11 @@ class ProfileIndex:
                 if not type_dir.is_dir():
                     continue
                 for path in sorted(type_dir.rglob("*.json")):
+                    # Orca keeps sync backups in dot-directories such as
+                    # .sync_bak; indexing those reports every backed-up profile
+                    # as a name collision with its live original.
+                    if any(part.startswith(".") for part in path.relative_to(type_dir).parts):
+                        continue
                     data = _load_json(path)
                     # An unreadable file is still indexed, under its filename, so
                     # it can be reported rather than vanishing from every view.

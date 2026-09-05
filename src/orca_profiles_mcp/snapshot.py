@@ -72,4 +72,14 @@ class EngineSnapshot:
         return _TYPE_KEYS.get(ptype, (None, None, None, None))[1]
 
     def is_known_key(self, key: str) -> bool:
-        return key in self.defaults or key in self.option_types
+        """Whether the engine recognises this key at all.
+
+        Three sources, and none of them alone is complete. The filament retract
+        overrides (filament_retraction_length and friends) appear only in the
+        per-type option lists: they carry no engine default and are not declared
+        through PrintConfigDef::add, so checking defaults and types alone
+        reported every one of them as unknown.
+        """
+        if key in self.defaults or key in self.option_types:
+            return True
+        return any(key in keys for keys in self.type_options.values())

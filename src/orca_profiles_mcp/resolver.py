@@ -225,17 +225,40 @@ class Resolver:
                 if key in META_KEYS:
                     continue
                 if not is_settable(key):
-                    diagnostics.append(
-                        Diagnostic(
-                            "warning",
-                            "foreign_key",
-                            f"{entry.name}: key {key!r} does not belong to a "
-                            f"{ptype} profile; Orca drops it on load, so it has "
-                            f"no effect",
-                            link=entry.name,
-                            key=key,
+                    # Two different problems wear the same shape here: a key the
+                    # engine has never heard of (a setting from a newer Orca,
+                    # written into the profile by that version), and a key it
+                    # knows but that belongs to another profile type.
+                    if not self.snapshot.is_known_key(key):
+                        diagnostics.append(
+                            Diagnostic(
+                                "warning",
+                                "unknown_key",
+                                f"{entry.name}: key {key!r} is unknown to Orca "
+                                f"{self.snapshot.orca_version} — most likely a "
+                                f"setting from a newer version; it is dropped on "
+                                f"load",
+                                link=entry.name,
+                                key=key,
+                            )
                         )
-                    )
+                    else:
+                        owners = [
+                            t
+                            for t in ("process", "machine", "filament")
+                            if key in (self.snapshot.allowed_keys(t) or ())
+                        ]
+                        where = f" (it belongs to: {', '.join(owners)})" if owners else ""
+                        diagnostics.append(
+                            Diagnostic(
+                                "warning",
+                                "foreign_key",
+                                f"{entry.name}: key {key!r} is not a {ptype} "
+                                f"setting{where}; Orca drops it on load",
+                                link=entry.name,
+                                key=key,
+                            )
+                        )
                     continue
                 previous = values.get(key)
                 # Engine defaults carry no variant layout, so per-slot merging
